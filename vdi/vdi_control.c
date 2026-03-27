@@ -612,8 +612,9 @@ void vdi_v_clrwk(Vwk * vwk)
     ULONG size;
     UBYTE fill;
 
-    /* Calculate screen size */
-    size = (ULONG)v_lin_wr * V_REZ_VT;
+    /* Total screen size: width_bytes * height * planes.
+     * Works for both interleaved (Atari) and contiguous (Amiga). */
+    size = (ULONG)V_REZ_HZ / 8 * V_REZ_VT * v_planes;
 
     /* clear the screen */
 #if CONF_WITH_VDI_16BIT

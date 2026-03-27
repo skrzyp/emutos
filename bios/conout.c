@@ -19,13 +19,12 @@
 
 #include "emutos.h"
 #include "lineavars.h"
+#include "biosext.h"
 #include "tosvars.h"            /* for v_bas_ad */
 #include "sound.h"              /* for bell() */
 #include "string.h"
 #include "conout.h"
 #include "../vdi/vdi_defs.h"    /* for phys_work stuff */
-
-#define PLANE_OFFSET    2       /* interleaved planes */
 
 #if CONF_WITH_VIDEL
 static const UWORD falcon_default_palette[16] = {
@@ -110,7 +109,7 @@ static UBYTE *cell_addr(UWORD x, UWORD y)
          *
          * X displacement = even(X) * v_planes + Xmod2
          */
-        disx = v_planes * (x & ~1);
+        disx = v_nxwd_w * (x & ~1);
         if (IS_ODD(x)) {        /* Xmod2 = 0 ? */
             disx++;             /* Xmod2 = 1 */
         }
@@ -274,7 +273,7 @@ static void cell_xfer(UBYTE *src, UBYTE *dst)
 
         bg >>= 1;                       /* next background color bit */
         fg >>= 1;                       /* next foreground color bit */
-        dst_sav += PLANE_OFFSET;        /* top of block in next plane */
+        dst_sav += v_nxpl;              /* top of block in next plane */
     }
 }
 
@@ -323,7 +322,7 @@ static void neg_cell(UBYTE *cell)
                 *addr = ~*addr;
                 addr += lin_wr;
             }
-            cell += PLANE_OFFSET;       /* a1 -> top of block in next plane */
+            cell += v_nxpl;             /* a1 -> top of block in next plane */
         }
     }
 
@@ -374,7 +373,7 @@ static BOOL next_cell(void)
     }
 
     /* new cell (1st plane), added offset to next word in plane */
-    v_cur_ad += (v_planes << 1) - 1;
+    v_cur_ad += v_nxwd - 1;
 
     return 0;                           /* indicate no wrap needed */
 }
@@ -620,7 +619,7 @@ void blank_out(int topx, int topy, int botx, int boty)
     pairs = (botx - topx + 1) / 2;      /* pairs of characters */
 
     /* calculate the BYTE offset from the end of one row to next start */
-    offs = v_lin_wr - pairs * 2 * v_planes;
+    offs = v_lin_wr - pairs * v_nxwd;
 
     /*
      * # of lines in region - 1
