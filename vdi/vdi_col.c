@@ -574,9 +574,16 @@ static void set_color(WORD colnum, WORD *rgb)
     else
 #endif
     {
+#ifdef MACHINE_AMIGA
+        /* Amiga OCS uses 4 bits per channel (0-15) */
+        r = (r * 3 + 100) / 200;
+        g = (g * 3 + 100) / 200;
+        b = (b * 3 + 100) / 200;
+#else
         r = vdi2st(r);
         g = vdi2st(g);
         b = vdi2st(b);
+#endif
     }
 
     Setcolor(hwreg, (r << 8) | (g << 4) | b);
@@ -926,9 +933,17 @@ void vdi_vq_color(Vwk *vwk)
         return;
     }
 #endif
-    /* ST shifter */
+    /* ST shifter (or Amiga OCS with 4-bit channels) */
     c = Setcolor(hwreg, -1);
+#ifdef MACHINE_AMIGA
+    /* Amiga OCS: 4 bits per channel (0-15), linear.
+     * Use exact formula (val * 1000 / 15) to stay within VDI 0-1000 range. */
+    INTOUT[1] = (UWORD)((c >> 8) & 0x0f) * 1000 / 15;
+    INTOUT[2] = (UWORD)((c >> 4) & 0x0f) * 1000 / 15;
+    INTOUT[3] = (UWORD)(c & 0x0f) * 1000 / 15;
+#else
     INTOUT[1] = st2vdi(c >> 8);
     INTOUT[2] = st2vdi(c >> 4);
     INTOUT[3] = st2vdi(c);
+#endif
 }
