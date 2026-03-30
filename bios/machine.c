@@ -1,7 +1,7 @@
 /*
  * machine.c - detection of machine type
  *
- * Copyright (C) 2001-2025 The EmuTOS development team
+ * Copyright (C) 2001-2026 The EmuTOS development team
  *
  * Authors:
  *  LVL     Laurent Vogel
@@ -304,6 +304,11 @@ static void detect_blitter(void)
 {
     has_blitter = blitter_is_enabled = 0;
 
+#ifdef MACHINE_AMIGA
+    /* Amiga OCS/ECS always has a blitter (part of Agnus chip) */
+    has_blitter = 1;
+    blitter_is_enabled = 1;
+#else
     /*
      * although no Atari-developed system has both TT-RAM and a blitter,
      * some add-ons to Atari systems do (e.g. a CT60 in 68060 mode).
@@ -316,6 +321,7 @@ static void detect_blitter(void)
 #endif
         if (check_read_byte(BLITTER_CONFIG1))
             has_blitter = 1;
+#endif
 
     KDEBUG(("has_blitter = %d\n", has_blitter));
 }

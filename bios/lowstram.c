@@ -1,7 +1,7 @@
 /*
  *  lowstram.c - low-memory ST-RAM variables
  *
- * Copyright (C) 2017-2021 The EmuTOS development team
+ * Copyright (C) 2017-2026 The EmuTOS development team
  *
  * Authors:
  *  VRI    Vincent Rivière
@@ -51,3 +51,13 @@ UBYTE dskbuf[DSKBUF_SIZE] __attribute__ ((aligned (2)));
  */
 UBYTE dskbuf_alignment[3]; /* FIXME: Unsafe hack to align dskbuf on 4 bytes */
 UBYTE shifty; /* reflects the status up/down of mode keys */
+
+#ifdef MACHINE_AMIGA
+/*
+ * Mask buffer for Amiga blitter B-channel DMA edge protection.
+ * Must be in ST-RAM (Chip RAM) because the OCS/ECS blitter can only
+ * DMA from the first 2MB.  With CONF_WITH_STATIC_ALT_RAM, normal BSS
+ * may be placed in Fast RAM, making it inaccessible to blitter DMA.
+ */
+UWORD amiga_raster_mask[64];
+#endif

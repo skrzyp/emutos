@@ -2,7 +2,7 @@
  * vdi_raster.c - Blitting routines
  *
  * Copyright 2002 Joachim Hoenig (blitter)
- * Copyright 2003-2025 The EmuTOS development team
+ * Copyright 2003-2026 The EmuTOS development team
  *
  * This file is distributed under the GPL, version 2 or at your
  * option any later version.  See doc/license.txt for details.
@@ -21,6 +21,9 @@
 #include "has.h"        /* for blitter-related items */
 #include "string.h"     /* for bzero() */
 #include "gemdos.h"     /* for mem alloc & free */
+#ifdef MACHINE_AMIGA
+#include "../bios/amiga.h"
+#endif
 
 #ifdef __mcoldfire__
 #define ASM_BLIT_IS_AVAILABLE   0   /* assembler routine does not support ColdFire */
@@ -365,11 +368,11 @@ void vdi_vr_trnfm(Vwk * vwk)
 }
 
 
-#if CONF_WITH_BLITTER
+#if CONF_WITH_BLITTER && CONF_ATARI_HARDWARE
 /*
  * hwblit_raster()
  *
- * Interface to hardware blitter for raster functions
+ * Interface to Atari hardware blitter for raster functions
  */
 static void
 hwblit_raster(BLITVARS *blt)
@@ -423,6 +426,225 @@ hwblit_raster(BLITVARS *blt)
     invalidate_data_cache((void *)blt->dst_addr,length);
 }
 #endif
+
+
+#ifdef MACHINE_AMIGA
+/*
+ * amiga_hwblit_raster()
+ *
+ * Per-plane raster operation using the Amiga OCS blitter.
+ * Called from bit_blt() for each bitplane.
+ *
+ * Channel mapping: A = source, C = old destination, D = new destination.
+ * Channel B = edge mask (DMA from buffer or constant 0xFFFF).
+ *
+ * Amiga vs Atari endmask difference:
+ * The Atari blitter endmasks act as destination write-enable masks applied
+ * AFTER the operation: D = (result & mask) | (old_dest & ~mask).
+ * The Amiga BLTAFWM/BLTALWM only zero bits in channel A BEFORE the
+ * minterm, which corrupts edge pixels for ops where f(0,C) != C.
+ *
+ * For the 12 affected ops (all except 4,5,6,7), we use a cookie-cut
+ * technique via channel B: D = (OP(A,C) & B) | (C & ~B), where B carries
+ * the edge mask.  Single-word blits use BLTBDAT constant; multi-word blits
+ * use B-channel DMA from a static mask buffer.
+ *
+ * Modulo = Atari y_inc - x_inc, because the Amiga blitter adds modulo
+ * after all x_cnt words, while the Atari adds y_inc after (x_count-1)
+ * x_inc steps.  We use dst_x_inc (not src_x_inc) for the calculation
+ * because bit_blt() overwrites src_x_inc with the skew value for
+ * single-word blits.
+ */
+
+static void
+amiga_hwblit_raster(BLITVARS *blt)
+{
+    UWORD con0, ash;
+    WORD src_mod, dst_mod;
+    BOOL descending;
+    UBYTE mt;
+    BOOL need_mask, need_cookie;
+
+    /* Skip NOP operations (op 5 = D, destination unchanged) */
+    if (blt->op == 5)
+        return;
+
+    amiga_blit_wait();
+
+    mt = amiga_minterm[blt->op];
+    ash = (UWORD)(blt->skew & 0x0F) << 12;
+
+    /* Use dst_x_inc for direction detection -- src_x_inc is unreliable
+     * because bit_blt() overwrites it with the skew value for single-word
+     * blits (an Atari-specific hack). */
+    descending = (blt->dst_x_inc < 0);
+
+    /* Modulo = Atari y_inc - x_inc.
+     * Use dst_x_inc (always +-2 on Amiga contiguous planes) as a
+     * reliable proxy for src_x_inc, which bit_blt() overwrites with
+     * the skew value for single-word blits (an Atari-specific hack).
+     *
+     * The Amiga blitter always ADDS modulo (ascending and descending
+     * alike).  In descending mode the Atari's negative y_inc/x_inc
+     * produce a negative raw value; negating it gives the positive
+     * modulo the Amiga blitter expects. */
+    src_mod = blt->src_y_inc - blt->dst_x_inc;
+    dst_mod = blt->dst_y_inc - blt->dst_x_inc;
+    if (descending) {
+        src_mod = -src_mod;
+        dst_mod = -dst_mod;
+    }
+
+    /* Check if non-trivial endmask present */
+    need_mask = (blt->end_1 != 0xFFFF)
+             || (blt->x_cnt > 1 && blt->end_3 != 0xFFFF);
+
+    /* Cookie-cut needed when f(A=0, B=1, C) != C.
+     * With B=1, f(0,C)==C only when minterm bit3=1 and bit2=0,
+     * which holds for ops 4,5,6,7 only.
+     *
+     * The cookie-cut minterm is mt | 0x22; this works because all
+     * amiga_minterm[] entries have bits 5,4,1,0 = 0 (B=1 assumption). */
+    need_cookie = need_mask && (!(mt & 0x08) || (mt & 0x04));
+
+    if (need_cookie && blt->x_cnt == 1) {
+        /* Single word: use BLTBDAT as constant cookie-cut mask */
+        con0 = ash | BLTCON0_USEA | BLTCON0_USEC | BLTCON0_USED
+             | (mt | 0x22);
+
+        BLTCON0 = con0;
+        BLTCON1 = descending ? BLTCON1_DESC : 0;
+        BLTAFWM = 0xFFFF;
+        BLTALWM = 0xFFFF;
+        BLTBDAT = blt->end_1;      /* combined mask for single word */
+        BLTAMOD = src_mod;
+        BLTCMOD = dst_mod;
+        BLTDMOD = dst_mod;
+        BLTAPTH = (void *)blt->src_addr;
+        BLTCPTH = (void *)blt->dst_addr;
+        BLTDPTH = (void *)blt->dst_addr;
+    } else if (need_cookie) {
+        /* Multi-word: use B-channel DMA with mask buffer.
+         * In descending mode, B starts at the last element and
+         * decrements, so the buffer must be filled in reverse order
+         * to match the processing direction. */
+        WORD i;
+
+        if (descending)
+        {
+            amiga_raster_mask[blt->x_cnt - 1] = blt->end_1;
+            for (i = 1; i < blt->x_cnt - 1; i++)
+                amiga_raster_mask[i] = 0xFFFF;
+            amiga_raster_mask[0] = blt->end_3;
+        }
+        else
+        {
+            amiga_raster_mask[0] = blt->end_1;
+            for (i = 1; i < blt->x_cnt - 1; i++)
+                amiga_raster_mask[i] = 0xFFFF;
+            amiga_raster_mask[blt->x_cnt - 1] = blt->end_3;
+        }
+
+        con0 = ash | BLTCON0_USEA | BLTCON0_USEB | BLTCON0_USEC
+             | BLTCON0_USED | (mt | 0x22);
+
+        BLTCON0 = con0;
+        BLTCON1 = descending ? BLTCON1_DESC : 0;
+        BLTAFWM = 0xFFFF;
+        BLTALWM = 0xFFFF;
+        BLTAMOD = src_mod;
+        BLTBPTH = descending
+                ? (void *)&amiga_raster_mask[blt->x_cnt - 1]
+                : (void *)&amiga_raster_mask[0];
+        /* Cycle B mask pointer back to start each line.  Ascending:
+         * pointer ends at mask[x_cnt], needs -x_cnt*2 to reach mask[0].
+         * Descending: pointer ends at mask[-1], needs +x_cnt*2 to
+         * reach mask[x_cnt-1]. */
+        BLTBMOD = descending ? (WORD)(blt->x_cnt * 2)
+                             : -(WORD)(blt->x_cnt * 2);
+        BLTCMOD = dst_mod;
+        BLTDMOD = dst_mod;
+        BLTAPTH = (void *)blt->src_addr;
+        BLTCPTH = (void *)blt->dst_addr;
+        BLTDPTH = (void *)blt->dst_addr;
+    } else {
+        /* No cookie-cut needed: either full-word-aligned or safe op
+         * (4,5,6,7 where f(0,C)==C, so BLTAFWM/BLTALWM are harmless).
+         * Enable C only when minterm depends on old dest. */
+        con0 = ash | BLTCON0_USEA | BLTCON0_USED | mt;
+        if (((mt >> 1) ^ mt) & 0x44)
+            con0 |= BLTCON0_USEC;
+
+        BLTCON0 = con0;
+        BLTCON1 = descending ? BLTCON1_DESC : 0;
+        BLTAFWM = blt->end_1;
+        BLTALWM = blt->end_3;
+        BLTAMOD = src_mod;
+        BLTDMOD = dst_mod;
+        BLTAPTH = (void *)blt->src_addr;
+        BLTDPTH = (void *)blt->dst_addr;
+        if (con0 & BLTCON0_USEC)
+        {
+            BLTCMOD = dst_mod;
+            BLTCPTH = (void *)blt->dst_addr;
+        }
+    }
+
+    /* Write BLTSIZE last: this triggers the DMA.
+     * Do NOT wait here -- the caller's next amiga_blit_wait() (at the top
+     * of the next plane's call, or the final wait after the plane loop)
+     * will synchronize.  This lets the CPU do per-plane bookkeeping
+     * (op_tabidx, address advance) while the blitter runs. */
+    BLTSIZE = ((UWORD)blt->y_cnt << 6) | (blt->x_cnt & 0x3F);
+}
+
+/*
+ * Check whether the actual rectangular blit span lies wholly in Chip RAM.
+ *
+ * The Amiga blitter can only DMA from/to Chip RAM.  Checking only the base
+ * MFDB pointer is not sufficient: a form may start below phystop yet extend
+ * beyond it.  We therefore validate the highest word address touched by the
+ * current rectangle (including plane stride).
+ */
+static BOOL amiga_blit_span_in_chip(const struct blit_frame *info, BOOL source)
+{
+    ULONG form, last;
+    WORD nxwd, nxln;
+    LONG nxpl;
+    UWORD xmax, ymax;
+
+    if (source)
+    {
+        form = (ULONG)info->s_form;
+        nxwd = info->s_nxwd;
+        nxln = info->s_nxln;
+        nxpl = info->s_nxpl;
+        xmax = info->s_xmax;
+        ymax = info->s_ymax;
+    }
+    else
+    {
+        form = (ULONG)info->d_form;
+        nxwd = info->d_nxwd;
+        nxln = info->d_nxln;
+        nxpl = info->d_nxpl;
+        xmax = info->d_xmax;
+        ymax = info->d_ymax;
+    }
+
+    if ((form >= (ULONG)phystop) || (nxwd <= 0) || (nxln <= 0) || (nxpl < 0))
+        return FALSE;
+
+    last = form;
+    if (info->plane_ct > 1)
+        last += (ULONG)(info->plane_ct - 1) * (ULONG)nxpl;
+    last += (ULONG)ymax * (ULONG)nxln;
+    last += (ULONG)(xmax >> 4) * (ULONG)nxwd;
+    last += sizeof(UWORD) - 1;
+
+    return last < (ULONG)phystop;
+}
+#endif /* MACHINE_AMIGA */
 
 
 #if !ASM_BLIT_IS_AVAILABLE
@@ -742,6 +964,76 @@ static void bit_blt(struct blit_frame *blit_info)
 
     blt->hop = HOP_SOURCE_ONLY;         /* set HOP to source only */
 
+#ifdef MACHINE_AMIGA
+    /*
+     * The Amiga blitter cannot emulate the Atari's FXSR/NFSR flags.
+     *
+     * DESCENDING with non-zero ASH: the barrel shifter pairs each word
+     * with the previously-read word.  In descending (R->L), that is the
+     * RIGHT neighbor -- but correct shifting requires the LEFT neighbor.
+     * This is unfixable without FXSR (pre-read from the other side).
+     * Fall back to software for these cases.
+     *
+     * ASCENDING with non-zero ASH: barrel shifter pairs with the LEFT
+     * neighbor (correct).  Only the source modulo needs compensation
+     * when s_span != d_span (FXSR/NFSR span mismatch).
+     *
+     * ASH=0: no shift, no issue.
+     * Single-word skew=0 FXSR: Atari quirk, harmless (ASH=0).
+     */
+    {
+        UBYTE ash_val = blt->skew & SKEW;
+        if (blt->dst_x_inc < 0 && ash_val)
+        {
+            /* Descending + shifted: software fallback.
+             * The barrel shifter pairs each word with the previously
+             * read word (the RIGHT neighbor in R->L mode), but correct
+             * shifting requires the LEFT neighbor.  This affects all
+             * descending blits with non-zero ASH, regardless of
+             * FXSR/NFSR flags. */
+            fast_bit_blt(blit_info);
+            return;
+        }
+        /* Ascending FXSR: barrel shifter can't pre-read the extra
+         * source word that the Atari uses to seed the pipeline.
+         * The first output word on each line would contain stale bits. */
+        if ((blt->skew & FXSR) && ash_val)
+        {
+            fast_bit_blt(blit_info);
+            return;
+        }
+        /* Ascending NFSR: adjust source modulo to compensate for
+         * the extra source word read (endmasks cover the difference). */
+        if (s_span != d_span && ash_val)
+            blt->src_y_inc += (WORD)(s_span - d_span) * blt->dst_x_inc;
+        /* Guard: amiga_raster_mask[] is 64 words; BLTSIZE width field
+         * is 6 bits (max 64, encoded as 0).  Fall back to software
+         * for hypothetical wide screens exceeding the buffer. */
+        if (blt->x_cnt > 64)
+        {
+            fast_bit_blt(blit_info);
+            return;
+        }
+        /* BLTSIZE height field is 10 bits (max 1024, encoded as 0).
+         * Standard Amiga screen modes stay well below this, but large
+         * Chip-RAM MFDBs can exceed it. */
+        if (blit_info->b_ht > 1024)
+        {
+            fast_bit_blt(blit_info);
+            return;
+        }
+        /* Use HOG mode (BLTPRI) for raster blits -- the CPU just waits
+         * between planes anyway, and HOG avoids the interleaved-mode
+         * penalty of one idle cycle per DMA access.
+         *
+         * Note: amiga_raster_mask[] is a shared static buffer; concurrent
+         * access is safe because amiga_blit_wait() serializes all blitter
+         * operations (no blitter use from interrupt context). */
+        amiga_blit_wait();
+        DMACONW = DMAF_SETCLR | DMAF_BLTPRI;
+    }
+#endif
+
     for (plane = 0; plane < blit_info->plane_ct; plane++) {
         int op_tabidx;
 
@@ -761,7 +1053,9 @@ static void bit_blt(struct blit_frame *blit_info)
          * (b) we are on 68K (ASM_BLIT_IS_AVAILABLE is 1): the
          *     hardware blitter must be enabled to get here.
          */
-#if !ASM_BLIT_IS_AVAILABLE
+#ifdef MACHINE_AMIGA
+        amiga_hwblit_raster(blt);
+#elif !ASM_BLIT_IS_AVAILABLE
 #if CONF_WITH_BLITTER
         if (blitter_is_enabled)
         {
@@ -779,6 +1073,13 @@ static void bit_blt(struct blit_frame *blit_info)
         s_addr += blit_info->s_nxpl;          /* a0-> start of next src plane   */
         d_addr += blit_info->d_nxpl;          /* a1-> start of next dst plane   */
     }
+
+#ifdef MACHINE_AMIGA
+    /* Ensure the last plane's blit has completed before the caller reads
+     * destination memory (e.g. screen capture, next drawing operation). */
+    amiga_blit_wait();
+    DMACONW = DMAF_BLTPRI;     /* back to interleaved mode */
+#endif
 }
 #endif
 
@@ -1495,7 +1796,12 @@ cpy_raster(struct raster_t *raster, struct blit_frame *info)
      */
 #if ASM_BLIT_IS_AVAILABLE
 #if CONF_WITH_BLITTER
-    if (blitter_is_enabled)
+    if (blitter_is_enabled
+#ifdef MACHINE_AMIGA
+        && amiga_blit_span_in_chip(info, TRUE)
+        && amiga_blit_span_in_chip(info, FALSE)
+#endif
+    )
     {
         bit_blt(info);
     }
@@ -1584,7 +1890,12 @@ void linea_blit(struct blit_frame *info)
      */
 #if ASM_BLIT_IS_AVAILABLE
 #if CONF_WITH_BLITTER
-    if (blitter_is_enabled)
+    if (blitter_is_enabled
+#ifdef MACHINE_AMIGA
+        && amiga_blit_span_in_chip(info, TRUE)
+        && amiga_blit_span_in_chip(info, FALSE)
+#endif
+    )
     {
         bit_blt(info);
     }

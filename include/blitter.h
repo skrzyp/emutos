@@ -1,7 +1,7 @@
 /*
  * blitter.h - header for blitter routines
  *
- * Copyright (C) 2017-2020 The EmuTOS development team
+ * Copyright (C) 2017-2026 The EmuTOS development team
  *
  * Authors:
  *  RFB   Roger Burrows
@@ -15,8 +15,9 @@
 
 #if CONF_WITH_BLITTER
 
+#if CONF_ATARI_HARDWARE
 /*
- * architectural definitions
+ * Atari ST/STe blitter (BLiTTER chip at 0xFFFF8A00)
  */
 #define BLITTER     ((BLIT *)0xFFFF8A00L)
 
@@ -40,7 +41,9 @@ typedef struct
     UBYTE           skew;               /* FXSR, NFSR, & skew */
 } BLIT;
 
-#endif
+#endif /* CONF_ATARI_HARDWARE */
+
+#endif /* CONF_WITH_BLITTER */
 
 /* the following are used by the blitter and the blitter emulation code */
 

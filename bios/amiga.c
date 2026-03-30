@@ -1,7 +1,7 @@
 /*
  * amiga.c - Amiga specific functions
  *
- * Copyright (C) 2013-2025 The EmuTOS development team
+ * Copyright (C) 2013-2026 The EmuTOS development team
  *
  * Authors:
  *  VRI   Vincent Rivière
@@ -60,7 +60,6 @@
 #define DIWSTOP *(volatile UWORD*)0xdff090
 #define DDFSTRT *(volatile UWORD*)0xdff092
 #define DDFSTOP *(volatile UWORD*)0xdff094
-#define DMACON  *(volatile UWORD*)0xdff096
 #define INTENA  *(volatile UWORD*)0xdff09a
 #define INTREQ  *(volatile UWORD*)0xdff09c
 #define ADKCON  *(volatile UWORD*)0xdff09e
@@ -622,6 +621,52 @@ void amiga_add_alt_ram(void)
 #endif /* CONF_WITH_ALT_RAM */
 
 /******************************************************************************/
+/* Blitter                                                                    */
+/******************************************************************************/
+
+/*
+ * Minterm lookup table: maps Atari 16-op raster codes to Amiga 8-bit
+ * minterms.  Channel mapping: A=source, C=old dest, D=new dest.
+ * Channel B is unused (BLTBDAT=0xFFFF, all ones).
+ *
+ * With B=1, only minterm bits 7,6,3,2 are effective:
+ *   bit 7: A & C   (src AND dst)
+ *   bit 6: A & ~C  (src AND NOT dst)
+ *   bit 3: ~A & C  (NOT src AND dst)
+ *   bit 2: ~A & ~C (NOT src AND NOT dst)
+ */
+const UBYTE amiga_minterm[16] = {
+    0x00,   /*  0: 0               */
+    0x80,   /*  1: S AND D         */
+    0x40,   /*  2: S AND NOT D     */
+    0xC0,   /*  3: S (copy)        */
+    0x08,   /*  4: NOT S AND D     */
+    0x88,   /*  5: D (nop)         */
+    0x48,   /*  6: S XOR D         */
+    0xC8,   /*  7: S OR D          */
+    0x04,   /*  8: NOT (S OR D)    */
+    0x84,   /*  9: NOT (S XOR D)   */
+    0x44,   /* 10: NOT D           */
+    0xC4,   /* 11: S OR NOT D      */
+    0x0C,   /* 12: NOT S           */
+    0x8C,   /* 13: NOT S OR D      */
+    0x4C,   /* 14: NOT (S AND D)   */
+    0xCC,   /* 15: 1               */
+};
+
+/*
+ * Wait for the blitter to finish.  Must be called before starting a
+ * new blit and before the CPU reads blitter output.
+ */
+void amiga_blit_wait(void)
+{
+    /* First read may be unreliable on A1000 (hardware errata) */
+    (void)DMACONR;
+    while (DMACONR & BBUSY)
+        ;
+}
+
+/******************************************************************************/
 /* Screen                                                                     */
 /******************************************************************************/
 
@@ -918,8 +963,8 @@ void amiga_screen_init(void)
     VEC_LEVEL3 = amiga_vbl;
     INTENA = SETBITS | INTEN | VERTB;
 
-    /* Start the DMA: bitplanes, Copper, and sprites */
-    DMACON = SETBITS | COPEN | BPLEN | SPREN | DMAEN;
+    /* Start the DMA: bitplanes, Copper, sprites, and blitter */
+    DMACONW = SETBITS | COPEN | BPLEN | SPREN | BLTEN | DMAEN;
 }
 
 void amiga_setphys(const UBYTE *addr)
@@ -1989,7 +2034,7 @@ void amiga_floppy_init(void)
     DSKSYNC = MAGIC_MFM_SYNC_MARK;
 
     /* Enable disk DMA */
-    DMACON = SETBITS | DSKEN;
+    DMACONW = SETBITS | DSKEN;
 }
 
 /* Select a single floppy drive for further operation */

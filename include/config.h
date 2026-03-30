@@ -589,6 +589,12 @@
 # ifndef CONF_WITH_UAE
 #  define CONF_WITH_UAE 1
 # endif
+# ifndef CONF_WITH_BLITTER
+#  define CONF_WITH_BLITTER 1  /* Amiga OCS/ECS blitter (own implementation, not BLIT struct) */
+# endif
+# ifndef CONF_WITH_VDI_VERTLINE
+#  define CONF_WITH_VDI_VERTLINE 1
+# endif
 #endif
 
 /*

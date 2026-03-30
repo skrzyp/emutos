@@ -3,7 +3,7 @@
  *
  * Copyright 1982 by Digital Research Inc.  All rights reserved.
  * Copyright 1999 by Caldera, Inc. and Authors:
- * Copyright (C) 2002-2025 The EmuTOS development team
+ * Copyright (C) 2002-2026 The EmuTOS development team
  *
  * This file is distributed under the GPL, version 2 or at your
  * option any later version.  See doc/license.txt for details.
@@ -186,10 +186,10 @@ static __inline__ void draw_rect_setup(BLITPARM *b, const VwkAttrib *attr, const
 }
 
 
-#if CONF_WITH_BLITTER
+#if CONF_WITH_BLITTER && CONF_ATARI_HARDWARE
 #if CONF_WITH_VDI_VERTLINE
 /*
- * draw a single vertical line using the blitter
+ * draw a single vertical line using the blitter (Atari)
  */
 static void hwblit_vertical_line(const Line *line, WORD wrt_mode, UWORD color)
 {
@@ -798,7 +798,7 @@ void draw_rect_common(const VwkAttrib *attr, const Rect *rect)
         swblit_rect_common16(attr, rect);
     else
 #endif
-#if CONF_WITH_BLITTER
+#if CONF_WITH_BLITTER && CONF_ATARI_HARDWARE
     if (blitter_is_enabled)
     {
         hwblit_rect_common(attr, rect);
@@ -2283,7 +2283,7 @@ void abline(const Line *line, const WORD wrt_mode, UWORD color)
         }
         else
 #endif
-#if CONF_WITH_BLITTER
+#if CONF_WITH_BLITTER && CONF_ATARI_HARDWARE
         if (blitter_is_enabled)
         {
             hwblit_vertical_line(line, wrt_mode, color);

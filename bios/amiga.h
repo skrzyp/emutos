@@ -1,7 +1,7 @@
 /*
  * amiga.h - Amiga specific functions
  *
- * Copyright (C) 2013-2019 The EmuTOS development team
+ * Copyright (C) 2013-2026 The EmuTOS development team
  *
  * Authors:
  *  VRI   Vincent Rivière
@@ -60,6 +60,44 @@ extern UWORD *amiga_sprite_ptr;     /* current sprite DMA pointer (data or null)
 extern UWORD amiga_palette_shadow[32];
 extern int has_gayle;
 extern UBYTE amiga_chipset;     /* CHIPSET_OCS / CHIPSET_ECS / CHIPSET_AGA */
+
+/* Amiga OCS blitter registers */
+#define DMACONR *(volatile UWORD*)0xdff002
+#define DMACONW *(volatile UWORD*)0xdff096
+#define DMAF_SETCLR  0x8000  /* same as SETBITS in amiga.c */
+#define DMAF_BLTPRI  0x0400
+#define BLTCON0 *(volatile UWORD*)0xdff040
+#define BLTCON1 *(volatile UWORD*)0xdff042
+#define BLTAFWM *(volatile UWORD*)0xdff044
+#define BLTALWM *(volatile UWORD*)0xdff046
+#define BLTCPTH *(void* volatile*)0xdff048
+#define BLTBPTH *(void* volatile*)0xdff04c
+#define BLTAPTH *(void* volatile*)0xdff050
+#define BLTDPTH *(void* volatile*)0xdff054
+#define BLTSIZE *(volatile UWORD*)0xdff058
+#define BLTCMOD *(volatile UWORD*)0xdff060
+#define BLTBMOD *(volatile UWORD*)0xdff062
+#define BLTAMOD *(volatile UWORD*)0xdff064
+#define BLTDMOD *(volatile UWORD*)0xdff066
+#define BLTBDAT *(volatile UWORD*)0xdff072
+#define BLTADAT *(volatile UWORD*)0xdff074
+
+#define BLTCON0_USEA  0x0800
+#define BLTCON0_USEB  0x0400
+#define BLTCON0_USEC  0x0200
+#define BLTCON0_USED  0x0100
+#define BLTCON1_DESC  0x0002  /* area mode: descending (right-to-left) */
+
+/* BLTCON1 line mode bits (bit 1 is SING in line mode, DESC in area mode) */
+#define BLTCON1_LINE  0x0001  /* bit 0: enable line mode */
+#define BLTCON1_AUL   0x0004  /* bit 2: invert "always" axis direction */
+#define BLTCON1_SUL   0x0008  /* bit 3: invert "sometimes" axis direction */
+#define BLTCON1_SUD   0x0010  /* bit 4: X is major axis (else Y) */
+#define BLTCON1_SIGN  0x0040  /* bit 6: sign of DDA accumulator */
+
+extern const UBYTE amiga_minterm[16];
+extern UWORD amiga_raster_mask[64];
+void amiga_blit_wait(void);
 
 void amiga_machine_detect(void);
 const char *amiga_machine_name(void);
