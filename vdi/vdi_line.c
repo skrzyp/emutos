@@ -21,6 +21,9 @@
 #include "lineavars.h"
 #include "vdi_inline.h"
 #include "has.h"        /* for blitter-related items */
+#ifdef MACHINE_AMIGA
+#include "../bios/amiga.h"
+#endif
 
 
 /*
@@ -437,6 +440,404 @@ static void hwblit_rect_common(const VwkAttrib *attr, const Rect *rect)
 #endif
 
 
+
+#ifdef MACHINE_AMIGA
+
+#if CONF_WITH_VDI_VERTLINE
+/*
+ * Draw a solid vertical line using the Amiga blitter.
+ *
+ * BLTADAT = 0xFFFF (constant), B = pixel mask.  One blit per plane.
+ * Cookie-cut via B-channel: D = (OP(A,C) & B) | (C & ~B).
+ *
+ * Styled lines (LN_MASK != 0xFFFF) fall back to the software path
+ * (vertical_line) to keep the blitter code simple.
+ */
+static BOOL amiga_hwblit_vertical_line(const Line *line, WORD wrt_mode, UWORD color)
+{
+    WORD plane, dy, height;
+    UBYTE op, mt;
+    UWORD pixbit;
+    UBYTE *plane_addr;
+    WORD y_top;
+
+    dy = line->y2 - line->y1;
+    if (dy < 0) dy = -dy;
+    height = dy + 1;
+
+    /* BLTSIZE height field is 10 bits (max 1024) */
+    if (height > 1024)
+        return FALSE;
+
+    y_top = (line->y1 <= line->y2) ? line->y1 : line->y2;
+    pixbit = 0x8000 >> (line->x1 & 0x0F);
+    plane_addr = (UBYTE *)get_start_addr(line->x1, y_top);
+
+    /* Set registers constant across all planes.
+     * USEA/USEB are not set: A and B data come from BLTADAT/BLTBDAT
+     * registers (constants, no DMA).  The minterm still references
+     * A and B via the cookie-cut formula (mt | 0x22). */
+    amiga_blit_wait();
+    DMACONW = DMAF_SETCLR | DMAF_BLTPRI;   /* HOG mode */
+    BLTCON1 = 0;
+    BLTBDAT = pixbit;
+    BLTADAT = 0xFFFF;
+    BLTCMOD = v_lin_wr - 2;
+    BLTDMOD = v_lin_wr - 2;
+
+    for (plane = 0; plane < v_planes; plane++, color >>= 1)
+    {
+        op = (color & 1) ? op_draw[wrt_mode] : op_nodraw[wrt_mode];
+
+        if (op == 5)        /* D (nop) -- skip */
+        {
+            plane_addr += v_nxpl;
+            continue;
+        }
+
+        mt = amiga_minterm[op];
+
+        if (plane) amiga_blit_wait();
+
+        BLTCON0 = BLTCON0_USEC | BLTCON0_USED | (mt | 0x22);
+        BLTCPTH = (void *)plane_addr;
+        BLTDPTH = (void *)plane_addr;
+        BLTSIZE = ((UWORD)height << 6) | 1;
+
+        plane_addr += v_nxpl;
+    }
+
+    amiga_blit_wait();
+    DMACONW = DMAF_BLTPRI;     /* back to interleaved mode */
+
+    return TRUE;
+}
+#endif /* CONF_WITH_VDI_VERTLINE */
+
+/*
+ * amiga_hwblit_rect: Amiga blitter version of draw_rect_common
+ *
+ * Uses BLTADAT register (no A DMA) as the pattern source.
+ * Only constant patterns are accelerated.  Varying line-by-line patterns
+ * fall back to software: the old per-line BLTADAT approach worked, but
+ * did not justify the extra complexity and maintenance cost.
+ *
+ * Edge masking: the Amiga blitter has no destination write-enable masks
+ * (unlike the Atari BLiTTER).  BLTAFWM/BLTALWM only zero bits in channel
+ * A, which corrupts edge pixels for ops where f(0,C) != C (e.g. REPLACE).
+ *
+ * Solution: use channel B (BLTBDAT) as a cookie-cut mask with the
+ * minterm D = (OP(A,C) & B) | (C & ~B).  For any Atari raster op,
+ * the cookie-cut minterm is amiga_minterm[op] | 0x22 (works because
+ * all table entries have bits 5,4,1,0 = 0 by construction).
+ *
+ * Since BLTBDAT is constant per blit, single-word fills use it directly,
+ * and constant-pattern multi-word fills use a 3-pass approach
+ * (left/middle/right).
+ */
+static BOOL amiga_hwblit_rect(const VwkAttrib *attr, const Rect *rect)
+{
+    const UWORD patmsk = attr->patmsk;
+    const UWORD *patptr = attr->patptr;
+    UWORD color = attr->color;
+    const WORD ycount = rect->y2 - rect->y1 + 1;
+    WORD plane;
+    BLITPARM b;
+    UBYTE op;
+    UBYTE *plane_addr;
+    WORD dst_mod;
+    BOOL need_cookie;
+    UWORD bmask;
+
+    draw_rect_setup(&b, attr, rect);
+
+    /* Check if edge masking is needed (partial first or last word) */
+    need_cookie = (b.leftmask != 0xFFFF)
+              || (b.width > 1 && b.rightmask != 0xFFFF);
+
+    /* BLTSIZE limits: height 10 bits (max 1024), width 6 bits (max 64) */
+    if (ycount > 1024 || b.width > 64)
+        return FALSE;
+
+    /* Only constant patterns are worth handling in hardware on Amiga.
+     * More complex line-varying patterns fall back to software. */
+    if (attr->multifill)
+        return FALSE;
+
+    {
+        WORD i;
+        for (i = 1; i <= patmsk; i++)
+            if (patptr[i] != patptr[0])
+                return FALSE;
+    }
+
+    plane_addr = (UBYTE *)b.addr;
+
+    /* Amiga contiguous planes: modulo = line_bytes - blit_width_bytes */
+    dst_mod = v_lin_wr - b.width * 2;
+
+    /* For single-word fills, leftmask already includes rightmask */
+    bmask = need_cookie ? b.leftmask : 0xFFFF;
+
+    amiga_blit_wait();
+    DMACONW = DMAF_SETCLR | DMAF_BLTPRI;   /* HOG mode */
+
+    for (plane = 0; plane < v_planes; plane++, color >>= 1,
+         plane_addr += v_nxpl)
+    {
+        UWORD minterm, con0;
+        BOOL usec;
+
+        op = (color & 1) ? op_draw[attr->wrt_mode] : op_nodraw[attr->wrt_mode];
+
+        /* Skip NOP operations (op 5 = D, destination unchanged) */
+        if (op == 5)
+            continue;
+
+        minterm = amiga_minterm[op];
+
+        /* Enable USEC only when the minterm depends on old destination.
+         * With B=1, C matters when bit7!=bit6 or bit3!=bit2.
+         * For REPLACE mode (the most common fill), this saves a DMA read
+         * per word -- roughly 33% of bus bandwidth. */
+        usec = ((minterm >> 1) ^ minterm) & 0x44;
+
+        if (need_cookie)
+            minterm |= 0x22;    /* D = (OP(A,C) & B) | (C & ~B) */
+
+        amiga_blit_wait();
+
+        /* A = pattern (register, no DMA).  B = mask (register).
+         * C = old dest (DMA read, when needed).  D = result (DMA write).
+         * Cookie-cut always needs USEC for destination preservation. */
+        con0 = (need_cookie || usec ? BLTCON0_USEC : 0)
+             | BLTCON0_USED | minterm;
+        BLTCON0 = con0;
+        BLTCON1 = 0;
+        BLTAFWM = 0xFFFF;      /* no A masking -- B handles edges */
+        BLTALWM = 0xFFFF;
+        BLTBDAT = bmask;
+        if (con0 & BLTCON0_USEC) {
+            BLTCMOD = dst_mod;
+        }
+        BLTDMOD = dst_mod;
+
+        BLTADAT = patptr[0];
+
+        if (!need_cookie)
+        {
+            /* Constant pattern, full words: single pass */
+            if (con0 & BLTCON0_USEC)
+                BLTCPTH = (void *)plane_addr;
+            BLTDPTH = (void *)plane_addr;
+            BLTSIZE = ((UWORD)ycount << 6) | (b.width & 0x3F);
+        }
+        else if (b.width == 1)
+        {
+            /* Constant pattern, single word: cookie-cut */
+            BLTCPTH = (void *)plane_addr;
+            BLTDPTH = (void *)plane_addr;
+            BLTSIZE = ((UWORD)ycount << 6) | 1;
+        }
+        else
+        {
+            /* Constant pattern, multi-word with edges: 3 passes.
+             * Left edge, middle, right edge -- each full height. */
+
+            /* Pass 1: left edge (1 word, cookie-cut, always needs USEC) */
+            BLTBDAT = b.leftmask;
+            BLTCON0 = BLTCON0_USEC | BLTCON0_USED | minterm;
+            BLTCMOD = v_lin_wr - 2;
+            BLTDMOD = v_lin_wr - 2;
+            BLTCPTH = (void *)plane_addr;
+            BLTDPTH = (void *)plane_addr;
+            BLTSIZE = ((UWORD)ycount << 6) | 1;
+
+            /* Pass 2: middle words (no masking needed, skip USEC if possible) */
+            if (b.width > 2)
+            {
+                WORD mid_w = b.width - 2;
+                UWORD mid_con0 = (usec ? BLTCON0_USEC : 0)
+                               | BLTCON0_USED | minterm;
+                amiga_blit_wait();
+                BLTBDAT = 0xFFFF;
+                BLTCON0 = mid_con0;
+                BLTCMOD = v_lin_wr - mid_w * 2;
+                BLTDMOD = v_lin_wr - mid_w * 2;
+                if (mid_con0 & BLTCON0_USEC)
+                    BLTCPTH = (void *)(plane_addr + 2);
+                BLTDPTH = (void *)(plane_addr + 2);
+                BLTSIZE = ((UWORD)ycount << 6) | (mid_w & 0x3F);
+            }
+
+            /* Pass 3: right edge (1 word, cookie-cut, always needs USEC) */
+            amiga_blit_wait();
+            BLTBDAT = b.rightmask;
+            BLTCON0 = BLTCON0_USEC | BLTCON0_USED | minterm;
+            BLTCMOD = v_lin_wr - 2;
+            BLTDMOD = v_lin_wr - 2;
+            BLTCPTH = (void *)(plane_addr + (b.width - 1) * 2);
+            BLTDPTH = (void *)(plane_addr + (b.width - 1) * 2);
+            BLTSIZE = ((UWORD)ycount << 6) | 1;
+        }
+    }
+
+    amiga_blit_wait();
+    DMACONW = DMAF_BLTPRI;     /* back to interleaved mode */
+    return TRUE;
+}
+#endif /* MACHINE_AMIGA */
+
+
+#ifdef MACHINE_AMIGA
+/*
+ * Draw a Bresenham line using the Amiga blitter's hardware line mode.
+ *
+ * The blitter draws one pixel per DMA cycle using a built-in Bresenham
+ * DDA.  Channel A provides the single-pixel mask (BLTADAT = 0x8000,
+ * shifted to the starting pixel position via ASH).  Channel B provides
+ * the line texture from BLTBDAT (= LN_MASK).  Channel C reads the
+ * existing screen word, and channel D writes the result.
+ *
+ * Input: line must be ordered left-to-right (x1 <= x2, i.e. dx >= 0).
+ *
+ * BLTCON1 bits [4:2] = SUD, SUL, AUL select the octant (HRM Table 6-3).
+ * When SUD=1 the "always" axis is X and the "sometimes" axis is Y;
+ * when SUD=0 the "always" axis is Y and the "sometimes" axis is X.
+ * AUL inverts the "always" direction; SUL inverts the "sometimes" direction.
+ *
+ * Since lines are ordered left-to-right (dx >= 0), only 4 octants:
+ *   X-major, +X, +Y: SUD|LINE          = 0x0011
+ *   X-major, +X, -Y: SUD|SUL|LINE      = 0x0019
+ *   Y-major, +X, +Y: LINE              = 0x0001
+ *   Y-major, +X, -Y: AUL|LINE          = 0x0005
+ */
+static BOOL amiga_hwblit_line(const Line *line, WORD wrt_mode, UWORD color)
+{
+    WORD dx, dy, ady;
+    WORD dmax, dmin;
+    WORD plane;
+    UWORD octant;
+    WORD apt;
+    UBYTE *start_addr;
+    UWORD saved_mask = LN_MASK;
+    UWORD texture;
+
+    dx = line->x2 - line->x1;          /* always >= 0 (left-to-right) */
+    dy = line->y2 - line->y1;
+    ady = (dy >= 0) ? dy : -dy;
+
+    if (dx >= ady) {
+        dmax = dx;
+        dmin = ady;
+        octant = BLTCON1_SUD | BLTCON1_LINE             /* X-major, +X */
+               | ((dy < 0) ? BLTCON1_SUL : 0);          /* -Y: invert minor */
+    } else {
+        dmax = ady;
+        dmin = dx;
+        octant = BLTCON1_LINE                            /* Y-major, +X */
+               | ((dy < 0) ? BLTCON1_AUL : 0);          /* -Y: invert major */
+    }
+
+    /* BLTSIZE height field is 10 bits (max 1024) */
+    if (dmax >= 1024)
+        return FALSE;
+
+    /* For ERASE mode, draw where texture is 0 (inverted) */
+    texture = (wrt_mode == WM_ERASE) ? ~saved_mask : saved_mask;
+
+    start_addr = (UBYTE *)get_start_addr(line->x1, line->y1);
+
+    /* Bresenham initial error term, scaled by 2x for the blitter.
+     * The standard Bresenham uses D = 2*dmin - dmax.  The blitter
+     * requires all DDA values doubled again (factor 4 total) because
+     * BLTAPTL is an address register that truncates odd values to even.
+     * So: BLTAPT = 4*dmin - 2*dmax, BLTAMOD = 4*(dmin-dmax),
+     *     BLTBMOD = 4*dmin. */
+    apt = 4 * dmin - 2 * dmax;
+
+    /* Set registers constant across all planes */
+    amiga_blit_wait();
+    DMACONW = DMAF_SETCLR | DMAF_BLTPRI;   /* HOG mode */
+    BLTAFWM = 0xFFFF;
+    BLTALWM = 0xFFFF;
+    BLTADAT = 0x8000;           /* single pixel mask */
+    BLTAMOD = 4 * (dmin - dmax);  /* diagonal step (added when SIGN=0) */
+    BLTBMOD = 4 * dmin;           /* major-only step (added when SIGN=1) */
+    BLTCMOD = v_lin_wr;           /* screen line width (Y step) */
+    BLTDMOD = v_lin_wr;
+
+    for (plane = 0; plane < v_planes; plane++, color >>= 1)
+    {
+        UWORD minterm;
+
+        switch (wrt_mode) {
+        case WM_XOR:
+            minterm = 0x6A;         /* D = (A & B) ^ C */
+            break;
+        case WM_REPLACE:
+            if (color & 1)
+                minterm = 0xCA;     /* set where B=1, clear where B=0 */
+            else
+                minterm = 0x0A;     /* clear at pixel pos regardless of B */
+            break;
+        case WM_ERASE:
+            /* falls through to TRANS logic with inverted texture */
+        case WM_TRANS:
+        default:
+            if (color & 1)
+                minterm = 0xEA;     /* set where B=1, preserve where B=0 */
+            else
+                minterm = 0x2A;     /* clear where B=1, preserve where B=0 */
+            break;
+        }
+
+        if (plane) amiga_blit_wait();
+
+        BLTCON0 = ((UWORD)(line->x1 & 0x0F) << 12)
+                | BLTCON0_USEA | BLTCON0_USEC | BLTCON0_USED
+                | minterm;
+        /* BLTCON1 and BLTBDAT must be rewritten per plane: the blitter's
+         * internal B shift register is rotated during line mode, so
+         * BLTBDAT must be reloaded to reset the texture position.
+         *
+         * BSH=15: the blitter tests bit 15 (MSB) of BLTBDAT first,
+         * matching the software draw_line() convention.  For polylines,
+         * LN_MASK arrives pre-rotated from previous segments, so
+         * always starting at MSB is correct. */
+        BLTCON1 = (15 << 12)
+                | octant | ((apt < 0) ? BLTCON1_SIGN : 0);
+        BLTBDAT = texture;
+        BLTCPTH = (void *)start_addr;
+        BLTDPTH = (void *)start_addr;
+        /* Write the full 32-bit BLTAPT register with sign-extended DDA
+         * initial value.  Writing only BLTAPTL leaves stale data from
+         * a previous blit in the high word, corrupting the DDA. */
+        BLTAPTH = (void *)(LONG)apt;
+
+        BLTSIZE = ((UWORD)(dmax + 1) << 6) | 0x0002;  /* height=pixels, width=2 */
+
+        start_addr += v_nxpl;       /* next contiguous plane */
+    }
+
+    amiga_blit_wait();
+    DMACONW = DMAF_BLTPRI;     /* back to interleaved mode */
+
+    /* Update LN_MASK to match the software path's rotation state.
+     * draw_line() rotates LN_MASK left by 1 per pixel (dmax+1 total). */
+    {
+        UWORD m = saved_mask;
+        WORD shift = (dmax + 1) & 15;
+        if (shift)
+            m = (m << shift) | (m >> (16 - shift));
+        LN_MASK = m;
+    }
+
+    return TRUE;
+}
+#endif /* MACHINE_AMIGA */
+
+
 #if CONF_WITH_VDI_16BIT
 /*
  * swblit_rect_common16 - draw one or more horizontal lines via software, 16-bit mode
@@ -804,6 +1205,8 @@ void draw_rect_common(const VwkAttrib *attr, const Rect *rect)
         hwblit_rect_common(attr, rect);
     }
     else
+#elif defined(MACHINE_AMIGA) && CONF_WITH_BLITTER
+    if (!blitter_is_enabled || !amiga_hwblit_rect(attr, rect))
 #endif
     {
         swblit_rect_common(attr, rect);
@@ -2290,6 +2693,11 @@ void abline(const Line *line, const WORD wrt_mode, UWORD color)
             return;
         }
         else
+#elif defined(MACHINE_AMIGA) && CONF_WITH_BLITTER
+        if (blitter_is_enabled && LN_MASK == 0xFFFF
+         && amiga_hwblit_vertical_line(line, wrt_mode, color))
+            return;
+        else
 #endif
         {
             vertical_line(line, wrt_mode, color);
@@ -2358,6 +2766,11 @@ void abline(const Line *line, const WORD wrt_mode, UWORD color)
 #if CONF_WITH_VDI_16BIT
     if (TRUECOLOR_MODE)
         draw_line16(&ordered, wrt_mode, color);
+    else
+#endif
+#if defined(MACHINE_AMIGA) && CONF_WITH_BLITTER
+    if (blitter_is_enabled && amiga_hwblit_line(&ordered, wrt_mode, color))
+        ;   /* handled by blitter */
     else
 #endif
     draw_line(&ordered, wrt_mode, color);
