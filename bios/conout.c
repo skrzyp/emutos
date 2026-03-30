@@ -3,7 +3,7 @@
  *
  *
  * Copyright (C) 2004 by Authors (see below)
- * Copyright (C) 2016-2025 The EmuTOS development team
+ * Copyright (C) 2016-2026 The EmuTOS development team
  *
  * Authors:
  *  MAD     Martin Doering
@@ -24,29 +24,131 @@
 #include "sound.h"              /* for bell() */
 #include "string.h"
 #include "conout.h"
-#include "amiga.h"              /* for MAX_AMIGA_PLANES */
+#include "has.h"
+#include "amiga.h"
 #include "../vdi/vdi_defs.h"    /* for phys_work stuff */
 
 #ifdef MACHINE_AMIGA
-/* Contiguous planes: copy/move each plane separately.
+/* Contiguous planes: copy/move each plane separately (CPU path).
  * scroll_up: dst < src, so memcpy is safe and faster.
  * scroll_down: dst > src within each plane, must use memmove. */
-static void scroll_up_planes(UBYTE *dst, UBYTE *src, ULONG count)
+static void scroll_planes_cpu(UBYTE *dst, UBYTE *src, ULONG count, BOOL upward)
 {
     int plane;
     ULONG poff = 0;
-    for (plane = 0; plane < v_planes; plane++, poff += v_nxpl)
-        memcpy(dst + poff, src + poff, count);
+    for (plane = 0; plane < v_planes; plane++, poff += v_nxpl) {
+        if (upward)
+            memcpy(dst + poff, src + poff, count);
+        else
+            memmove(dst + poff, src + poff, count);
+    }
 }
 
-static void scroll_down_planes(UBYTE *dst, UBYTE *src, ULONG count)
+/*
+ * Contiguous planes: scroll using the Amiga blitter (DMA copy).
+ * One blit per plane, ascending or descending based on overlap direction.
+ * Falls back to CPU memcpy/memmove when the blitter cannot handle the
+ * transfer (alignment, size limits, or blitter disabled).
+ */
+static void scroll_planes(UBYTE *dst, UBYTE *src, ULONG count, BOOL upward)
 {
+#if !CONF_WITH_BLITTER
+    scroll_planes_cpu(dst, src, count, upward);
+#else
     int plane;
-    ULONG poff = 0;
-    for (plane = 0; plane < v_planes; plane++, poff += v_nxpl)
-        memmove(dst + poff, src + poff, count);
-}
+    LONG words;
+    LONG lines;
+    WORD width_w, mod;
+
+    if (!blitter_is_enabled)
+    {
+        scroll_planes_cpu(dst, src, count, upward);
+        return;
+    }
+
+    /* Blitter needs word-aligned, word-sized transfers */
+    if ((count < 2) || (count & 1) || ((ULONG)src & 1) || ((ULONG)dst & 1))
+    {
+        scroll_planes_cpu(dst, src, count, upward);
+        return;
+    }
+
+    words = (LONG)(count >> 1);
+
+    /* Split into lines of up to 64 words (BLTSIZE max width, 0=64).
+     * For typical Amiga modes, use the full screen width.  Wider modes
+     * need a software fallback because the blitter cannot encode them
+     * as a single 2-D copy with zero modulo. */
+    width_w = v_lin_wr >> 1;        /* screen line width in words */
+    if (width_w > 64)
+    {
+        scroll_planes_cpu(dst, src, count, upward);
+        return;
+    }
+
+    if ((words % width_w) == 0)
+    {
+        lines = words / width_w;
+    }
+    else
+    {
+        /* Odd size: blit as 1 word wide, N lines tall */
+        width_w = 1;
+        lines = words;
+    }
+
+    /* BLTSIZE height field is 10 bits (max 1024, 0=1024).
+     * Fall back for counts exceeding blitter capacity. */
+    if (lines > 1024)
+    {
+        scroll_planes_cpu(dst, src, count, upward);
+        return;
+    }
+
+    mod = 0;
+
+    /* Set constant registers once before the per-plane loop.
+     * Use HOG mode (BLTPRI) for these large blits -- the CPU
+     * just waits anyway, and HOG avoids the interleaved-mode
+     * penalty of one idle cycle per DMA access. */
+    amiga_blit_wait();
+    DMACONW = DMAF_SETCLR | DMAF_BLTPRI;
+    BLTCON0 = BLTCON0_USEA | BLTCON0_USED | 0xF0;  /* D = A (copy) */
+    BLTAFWM = 0xFFFF;
+    BLTALWM = 0xFFFF;
+    BLTAMOD = mod;
+    BLTDMOD = mod;
+
+    for (plane = 0; plane < v_planes; plane++)
+    {
+        UBYTE *s = src + (ULONG)plane * v_nxpl;
+        UBYTE *d = dst + (ULONG)plane * v_nxpl;
+        BOOL desc = (s < d);    /* overlapping: need descending */
+
+        if (plane) amiga_blit_wait();
+
+        BLTCON1 = desc ? BLTCON1_DESC : 0;
+
+        if (desc)
+        {
+            /* Start from end of data */
+            BLTAPTH = (void *)(s + count - 2);
+            BLTDPTH = (void *)(d + count - 2);
+        }
+        else
+        {
+            BLTAPTH = (void *)s;
+            BLTDPTH = (void *)d;
+        }
+
+        BLTSIZE = ((UWORD)lines << 6) | (width_w & 0x3F);
+    }
+
+    amiga_blit_wait();
+    DMACONW = DMAF_BLTPRI;     /* back to interleaved mode */
 #endif
+}
+#endif /* MACHINE_AMIGA */
 
 #if CONF_WITH_VIDEL
 static const UWORD falcon_default_palette[16] = {
@@ -619,7 +721,7 @@ static void blank_out16(int topx, int topy, int botx, int boty)
 void blank_out(int topx, int topy, int botx, int boty)
 {
     UWORD color;
-    int pair, pairs, row, rows, offs;
+    int pairs, row, rows;
     UBYTE *addr;
 
 #if CONF_WITH_VIDEL
@@ -640,9 +742,6 @@ void blank_out(int topx, int topy, int botx, int boty)
      */
     pairs = (botx - topx + 1) / 2;      /* pairs of characters */
 
-    /* calculate the BYTE offset from the end of one row to next start */
-    offs = v_lin_wr - pairs * v_nxwd;
-
     /*
      * # of lines in region - 1
      *
@@ -650,25 +749,68 @@ void blank_out(int topx, int topy, int botx, int boty)
      */
     rows = (boty - topy + 1) * v_cel_ht;
 
-    if (v_planes > 1) {
 #ifdef MACHINE_AMIGA
-        /* Contiguous planes: fill each plane with memset. */
-        UBYTE plane_byte[MAX_AMIGA_PLANES];
+    /* Contiguous planes: fill each plane using the Amiga blitter.
+     * D-only mode: no source or old-dest DMA, just constant fill.
+     * This handles both multiplane and monochrome (v_planes=1).
+     *
+     * Blitmode() disables all Amiga blitter use, including BIOS console
+     * acceleration, so that benchmarking and debugging can compare against
+     * the software path. */
+    {
         UWORD fill_len = pairs * v_nxwd;    /* bytes to fill per row per plane */
+        UBYTE plane_byte[MAX_AMIGA_PLANES];
         UWORD i;
 
-        for (i = 0; i < v_planes; i++) {
-            plane_byte[i] = (color & 0x0001) ? 0xff : 0x00;
-            color >>= 1;
-        }
+#if CONF_WITH_BLITTER
+        if (blitter_is_enabled) {
+            WORD width_w = fill_len >> 1;   /* words per row */
 
+        /* fill_len is always even (v_nxwd=2 on Amiga); width_w <= 64
+         * for all standard resolutions.  BLTSIZE encodes 64 as 0 and
+         * its height field is limited to 1024 lines. */
+            if ((fill_len >= 2) && !(fill_len & 1) && width_w <= 64
+             && rows <= 1024)
+            {
+                WORD bmod = v_lin_wr - fill_len;
+
+                amiga_blit_wait();
+                DMACONW = DMAF_SETCLR | DMAF_BLTPRI;   /* HOG mode */
+                BLTCON1 = 0;
+                BLTDMOD = bmod;
+
+                for (i = 0; i < v_planes; i++, color >>= 1)
+                {
+                    if (i) amiga_blit_wait();
+
+                    BLTCON0 = BLTCON0_USED
+                           | ((color & 1) ? 0xFF : 0x00);  /* D = all 1s or 0s */
+                    BLTDPTH = (void *)(addr + (ULONG)i * v_nxpl);
+                    BLTSIZE = ((UWORD)rows << 6) | (width_w & 0x3F);
+                }
+
+                amiga_blit_wait();
+                DMACONW = DMAF_BLTPRI;     /* back to interleaved */
+                return;
+            }
+        }
+#endif
+
+        /* CPU fallback: pre-compute per-plane fill bytes */
+        {
+            UWORD c = color;
+            for (i = 0; i < v_planes; i++) {
+                plane_byte[i] = (c & 0x0001) ? 0xff : 0x00;
+                c >>= 1;
+            }
+        }
+        /* Planes-outer for contiguous plane locality */
         if (fill_len == (UWORD)v_lin_wr) {
             /* Full width: rows within each plane are contiguous */
             ULONG total = (ULONG)fill_len * rows;
             for (i = 0; i < v_planes; i++)
                 memset(addr + (ULONG)i * v_nxpl, plane_byte[i], total);
         } else {
-            /* Partial width: planes-outer for contiguous plane locality */
             for (i = 0; i < v_planes; i++) {
                 UBYTE *p = addr + (ULONG)i * v_nxpl;
                 for (row = rows; row--;) {
@@ -677,10 +819,17 @@ void blank_out(int topx, int topy, int botx, int boty)
                 }
             }
         }
+    }
 #else
+    if (v_planes > 1) {
         /* Interleaved planes: optimized for handling 2 planes at once */
         ULONG pair_planes[4];        /* bits on screen for 8 planes max */
+        int pair;
+        int offs;
         UWORD i;
+
+        /* calculate the BYTE offset from the end of one row to next start */
+        offs = v_lin_wr - pairs * v_nxwd;
 
         /* Precalculate the pairs of plane data */
         for (i = 0; i < v_planes / 2; i++) {
@@ -708,28 +857,25 @@ void blank_out(int topx, int topy, int botx, int boty)
             }
             addr += offs;       /* skip non-region area with stride advance */
         }
-#endif
     }
     else {
         /* Monochrome mode */
-        UWORD pl;               /* bits on screen for current plane */
+        int pair;
+        int offs;
+        UWORD pl = (color & 0x0001) ? 0xffff : 0x0000;
 
-        /* set the WORD for plane 0 */
-        if (color & 0x0001)
-            pl = 0xffff;
-        else
-            pl = 0x0000;
+        /* calculate the BYTE offset from the end of one row to next start */
+        offs = v_lin_wr - pairs * v_nxwd;
 
-        /* do all rows in region */
         for (row = rows; row--;) {
-            /* loop through all cell pairs */
             for (pair = pairs; pair--;) {
                 *(UWORD*)addr = pl;
                 addr += sizeof(UWORD);
             }
-            addr += offs;       /* skip non-region area with stride advance */
+            addr += offs;
         }
     }
+#endif
 }
 
 
@@ -767,7 +913,7 @@ void scroll_up(UWORD top_line)
     count = (ULONG)v_cel_wr * (v_cel_my - top_line);
 
 #ifdef MACHINE_AMIGA
-    scroll_up_planes(dst, src, count);
+    scroll_planes(dst, src, count, TRUE);
 #else
     memmove(dst, src, count);
 #endif
@@ -797,7 +943,7 @@ void scroll_down(UWORD start_line)
     count = (ULONG)v_cel_wr * (v_cel_my - start_line);
 
 #ifdef MACHINE_AMIGA
-    scroll_down_planes(dst, src, count);
+    scroll_planes(dst, src, count, FALSE);
 #else
     memmove(dst, src, count);
 #endif
