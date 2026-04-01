@@ -26,54 +26,55 @@
 
 /* Frame parameters - just for copyfrm.S and bitblt.S */
 
-#define FRAME_LEN   76
+// blit_frame offsets (struct size = 80 bytes, s_nxpl and d_nxpl are LONG)
+#define FRAME_LEN   80
 
-#define B_WD       -76  // +00 width of block in pixels
-#define B_HT       -74  // +02 height of block in pixels
+#define B_WD       -80  // +00 width of block in pixels
+#define B_HT       -78  // +02 height of block in pixels
 
-#define PLANE_CT   -72  // +04 number of consequitive planes to blt
+#define PLANE_CT   -76  // +04 number of consequitive planes to blt
 
-#define FG_COL     -70  // +06 foreground color (logic op table index:hi bit)
-#define BG_COL     -68  // +08 background color (logic op table index:lo bit)
-#define OP_TAB     -66  // +10 logic ops for all fore and background combos
-#define S_XMIN     -62  // +14 minimum X: source
-#define S_YMIN     -60  // +16 minimum Y: source
-#define S_FORM     -58  // +18 source form base address
+#define FG_COL     -74  // +06 foreground color (logic op table index:hi bit)
+#define BG_COL     -72  // +08 background color (logic op table index:lo bit)
+#define OP_TAB     -70  // +10 logic ops for all fore and background combos
+#define S_XMIN     -66  // +14 minimum X: source
+#define S_YMIN     -64  // +16 minimum Y: source
+#define S_FORM     -62  // +18 source form base address
 
-#define S_NXWD     -54  // +22 offset to next word in line  (in bytes)
-#define S_NXLN     -52  // +24 offset to next line in plane (in bytes)
-#define S_NXPL     -50  // +26 offset to next plane from start of current plane
+#define S_NXWD     -58  // +22 offset to next word in line  (in bytes)
+#define S_NXLN     -56  // +24 offset to next line in plane (in bytes)
+#define S_NXPL     -54  // +26 offset to next plane (LONG)
 
-#define D_XMIN     -48  // +28 minimum X: destination
-#define D_YMIN     -46  // +30 minimum Y: destination
-#define D_FORM     -44  // +32 destination form base address
+#define D_XMIN     -50  // +30 minimum X: destination
+#define D_YMIN     -48  // +32 minimum Y: destination
+#define D_FORM     -46  // +34 destination form base address
 
-#define D_NXWD     -40  // +36 offset to next word in line  (in bytes)
-#define D_NXLN     -38  // +38 offset to next line in plane (in bytes)
-#define D_NXPL     -36  // +40 offset to next plane from start of current plane
+#define D_NXWD     -42  // +38 offset to next word in line  (in bytes)
+#define D_NXLN     -40  // +40 offset to next line in plane (in bytes)
+#define D_NXPL     -38  // +42 offset to next plane (LONG)
 
-#define P_ADDR     -34  // +42 address of pattern buffer   (0:no pattern)
-#define P_NXLN     -30  // +46 offset to next line in pattern  (in bytes)
-#define P_NXPL     -28  // +48 offset to next plane in pattern (in bytes)
-#define P_MASK     -26  // +50 pattern index mask
+#define P_ADDR     -34  // +46 address of pattern buffer   (0:no pattern)
+#define P_NXLN     -30  // +50 offset to next line in pattern  (in bytes)
+#define P_NXPL     -28  // +52 offset to next plane in pattern (in bytes)
+#define P_MASK     -26  // +54 pattern index mask
 
 /* these additional frame parameters are internally used by bit_btl(),
  * its caller must set the *MAX parameters before call.
  */
 
-#define P_INDX     -24  // +52 initial pattern index
+#define P_INDX     -24  // +56 initial pattern index
 
-#define S_ADDR     -22  // +54 initial source address
-#define S_XMAX     -18  // +58 maximum X: source
-#define S_YMAX     -16  // +60 maximum Y: source
+#define S_ADDR     -22  // +58 initial source address
+#define S_XMAX     -18  // +62 maximum X: source
+#define S_YMAX     -16  // +64 maximum Y: source
 
-#define D_ADDR     -14  // +62 initial destination address
-#define D_XMAX     -10  // +66 maximum X: destination
-#define D_YMAX      -8  // +68 maximum Y: destination
+#define D_ADDR     -14  // +66 initial destination address
+#define D_XMAX     -10  // +70 maximum X: destination
+#define D_YMAX      -8  // +72 maximum Y: destination
 
-#define INNER_CT    -6  // +70 blt inner loop initial count
-#define DST_WR      -4  // +72 destination form wrap (in bytes)
-#define SRC_WR      -2  // +74 source form wrap (in bytes)
+#define INNER_CT    -6  // +74 blt inner loop initial count
+#define DST_WR      -4  // +76 destination form wrap (in bytes)
+#define SRC_WR      -2  // +78 source form wrap (in bytes)
 
 // name:
 //      bltfrag.s
@@ -1104,13 +1105,13 @@ np_cont:
 
         move.l  S_ADDR(a6),a0           // a0 -> next source plane
 
-        add.w   S_NXPL(a6),a0
+        add.l   S_NXPL(a6),a0
 
         move.l  a0,S_ADDR(a6)
 
         move.l  D_ADDR(a6),a1           // a1 -> next destination plane
 
-        add.w   D_NXPL(a6),a1
+        add.l   D_NXPL(a6),a1
 
         move.l  a1,D_ADDR(a6)
 
@@ -1395,8 +1396,8 @@ sc_mp_enter:
         move.l  S_ADDR(a6),a0   // advance to next plane
         move.l  D_ADDR(a6),a1
 
-        add.w   S_NXPL(a6),a0
-        add.w   D_NXPL(a6),a1
+        add.l   S_NXPL(a6),a0
+        add.l   D_NXPL(a6),a1
 
         move.l  a0,S_ADDR(a6)
         move.l  a1,D_ADDR(a6)

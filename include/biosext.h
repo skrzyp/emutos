@@ -78,8 +78,22 @@ void flop_eject(void);
 extern void (*mousexvec)(WORD scancode);    /* Additional mouse buttons */
 #endif
 
-/* Line A extensions */
+/* Line A extensions.
+ *
+ * v_nxpl and v_nxwd parameterize the bitplane memory layout so that
+ * drawing code works for both Atari interleaved and Amiga contiguous
+ * formats.  Third-party software that accesses screen memory directly
+ * (via Line-A or otherwise) should use these variables instead of
+ * assuming interleaved layout.  See bios/lineainit.c for details.
+ *
+ * Atari (interleaved):  v_nxwd = v_planes*2,  v_nxpl = 2
+ * Amiga (contiguous):   v_nxwd = 2,           v_nxpl = plane_size
+ */
 extern UBYTE v_planes_shift; /* pixel to address helper */
+extern ULONG v_nxpl;         /* bytes to next plane at same pixel position */
+extern WORD v_nxwd;          /* bytes to next word in same plane */
+#define v_nxpl_w  ((LONG)(v_nxpl >> 1))  /* plane offset in words */
+#define v_nxwd_w  (v_nxwd >> 1)  /* word offset in words */
 
 /* determine monitor type, ... */
 WORD get_monitor_type(void);

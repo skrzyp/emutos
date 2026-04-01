@@ -192,7 +192,18 @@ Vwk * get_vwk_by_handle(WORD handle)
  */
 void update_rez_dependent(void)
 {
+#ifdef MACHINE_AMIGA
+    /* Amiga uses contiguous bitplanes: v_lin_wr is one plane's width */
+    BYTES_LIN = v_lin_wr = V_REZ_HZ / 8;
+    v_nxwd = 2;
+    /* Mono: v_nxpl=0 is safe because all plane-advancing loops iterate
+     * exactly once when v_planes==1, so the nxpl increment is never used. */
+    v_nxpl = (v_planes > 1) ? (ULONG)v_lin_wr * V_REZ_VT : 0;
+#else
     BYTES_LIN = v_lin_wr = V_REZ_HZ / 8 * v_planes;
+    v_nxwd = v_planes * 2;
+    v_nxpl = 2;
+#endif
 
 #if EXTENDED_PALETTE
     mcs_ptr = (v_planes <= 4) ? &mouse_cursor_save : &ext_mouse_cursor_save;

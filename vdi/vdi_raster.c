@@ -124,7 +124,7 @@ static const UBYTE skew_flags[8] = {
 #define YMAX_D  7       /* y of lower right of destination rectangle */
 
 
-/* 76-byte line-A BITBLT struct passing parameters to bitblt */
+/* 80-byte line-A BITBLT struct passing parameters to bitblt */
 struct blit_frame {
     WORD b_wd;          /* +00 width of block in pixels */
     WORD b_ht;          /* +02 height of block in pixels */
@@ -137,29 +137,29 @@ struct blit_frame {
     UWORD * s_form;     /* +18 source form base address */
     WORD s_nxwd;        /* +22 offset to next word in line  (in bytes) */
     WORD s_nxln;        /* +24 offset to next line in plane (in bytes) */
-    WORD s_nxpl;        /* +26 offset to next plane from start of current plane */
-    WORD d_xmin;        /* +28 minimum X: destination */
-    WORD d_ymin;        /* +30 minimum Y: destination */
-    UWORD * d_form;     /* +32 destination form base address */
-    WORD d_nxwd;        /* +36 offset to next word in line  (in bytes) */
-    WORD d_nxln;        /* +38 offset to next line in plane (in bytes) */
-    WORD d_nxpl;        /* +40 offset to next plane from start of current plane */
-    UWORD * p_addr;     /* +42 address of pattern buffer   (0:no pattern) */
-    WORD p_nxln;        /* +46 offset to next line in pattern  (in bytes) */
-    WORD p_nxpl;        /* +48 offset to next plane in pattern (in bytes) */
-    WORD p_mask;        /* +50 pattern index mask */
+    LONG s_nxpl;        /* +26 offset to next plane (in bytes) */
+    WORD d_xmin;        /* +30 minimum X: destination */
+    WORD d_ymin;        /* +32 minimum Y: destination */
+    UWORD * d_form;     /* +34 destination form base address */
+    WORD d_nxwd;        /* +38 offset to next word in line  (in bytes) */
+    WORD d_nxln;        /* +40 offset to next line in plane (in bytes) */
+    LONG d_nxpl;        /* +42 offset to next plane (in bytes) */
+    UWORD * p_addr;     /* +46 address of pattern buffer   (0:no pattern) */
+    WORD p_nxln;        /* +50 offset to next line in pattern  (in bytes) */
+    WORD p_nxpl;        /* +52 offset to next plane in pattern (in bytes) */
+    WORD p_mask;        /* +54 pattern index mask */
 
     /* these frame parameters are internally set */
-    WORD p_indx;        /* +52 initial pattern index */
-    UWORD * s_addr;     /* +54 initial source address */
-    WORD s_xmax;        /* +58 maximum X: source */
-    WORD s_ymax;        /* +60 maximum Y: source */
-    UWORD * d_addr;     /* +62 initial destination address */
-    WORD d_xmax;        /* +66 maximum X: destination */
-    WORD d_ymax;        /* +68 maximum Y: destination */
-    WORD inner_ct;      /* +70 blt inner loop initial count */
-    WORD dst_wr;        /* +72 destination form wrap (in bytes) */
-    WORD src_wr;        /* +74 source form wrap (in bytes) */
+    WORD p_indx;        /* +56 initial pattern index */
+    UWORD * s_addr;     /* +58 initial source address */
+    WORD s_xmax;        /* +62 maximum X: source */
+    WORD s_ymax;        /* +64 maximum Y: source */
+    UWORD * d_addr;     /* +66 initial destination address */
+    WORD d_xmax;        /* +70 maximum X: destination */
+    WORD d_ymax;        /* +72 maximum Y: destination */
+    WORD inner_ct;      /* +74 blt inner loop initial count */
+    WORD dst_wr;        /* +76 destination form wrap (in bytes) */
+    WORD src_wr;        /* +78 source form wrap (in bytes) */
 };
 
 /* Raster definitions */
