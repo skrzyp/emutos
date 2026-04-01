@@ -42,7 +42,7 @@ extern UBYTE bootflags;
 #define BOOTFLAG_SKIP_AUTO_ACC 0x04
 
 /* Video RAM stuff */
-#if CONF_WITH_VIDEL
+#if CONF_WITH_SREALLOC
 extern LONG video_ram_size;
 extern void *video_ram_addr;
 #endif

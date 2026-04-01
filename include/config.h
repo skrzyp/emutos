@@ -2061,6 +2061,18 @@
 
 
 
+/*
+ * Set CONF_WITH_SREALLOC to 1 to enable Srealloc() (GEMDOS function 0x15)
+ * for dynamic screen memory reallocation.
+ * Used by Falcon Videl and Amiga extended video modes.
+ */
+#if CONF_WITH_VIDEL || defined(MACHINE_AMIGA)
+# define CONF_WITH_SREALLOC 1
+#else
+# define CONF_WITH_SREALLOC 0
+#endif
+
+
 /************************************************
  *  S A N I T Y   C H E C K   S E C T I O N     *
  ************************************************/

@@ -42,7 +42,7 @@ void detect_monitor_change(void);
 static void setphys(const UBYTE *addr);
 static ULONG calc_vram_size(void);
 
-#if CONF_WITH_VIDEL
+#if CONF_WITH_SREALLOC
 LONG video_ram_size;        /* these are used by Srealloc() */
 void *video_ram_addr;
 #endif
@@ -647,7 +647,7 @@ void screen_init_address(void)
     screen_start = balloc_stram(vram_size, TRUE);
 #endif /* CONF_VRAM_ADDRESS */
 
-#if CONF_WITH_VIDEL
+#if CONF_WITH_SREALLOC
     video_ram_size = vram_size;     /* these are used by Srealloc() */
     video_ram_addr = screen_start;
 #endif
