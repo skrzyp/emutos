@@ -925,7 +925,7 @@ setup_info (struct raster_t *raster, struct blit_frame * info)
     else {
         /* source form is screen */
         info->s_form = (UWORD*) v_bas_ad;
-        info->s_nxwd = v_planes * 2;
+        info->s_nxwd = v_nxwd;
         info->s_nxln = v_lin_wr;
     }
 
@@ -941,7 +941,7 @@ setup_info (struct raster_t *raster, struct blit_frame * info)
         /* destination form is screen */
         info->d_form = (UWORD*) v_bas_ad;
         info->plane_ct = v_planes;
-        info->d_nxwd = v_planes * 2;
+        info->d_nxwd = v_nxwd;
         info->d_nxln = v_lin_wr;
 
         /* check if clipping is enabled, when destination is screen */
@@ -956,8 +956,8 @@ setup_info (struct raster_t *raster, struct blit_frame * info)
     else
         dont_clip(info);
 
-    info->s_nxpl = 2;           /* next plane offset (source) */
-    info->d_nxpl = 2;           /* next plane offset (destination) */
+    info->s_nxpl = v_nxpl;      /* next plane offset (source) */
+    info->d_nxpl = v_nxpl;      /* next plane offset (destination) */
 
 #if CONF_WITH_VDI_16BIT
     return (info->plane_ct <= 16) ? FALSE : TRUE;

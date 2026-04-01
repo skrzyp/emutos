@@ -58,6 +58,7 @@
 |;;           .extern _SOURCEX         | [18]
 |;;           .extern _SOURCEY         | [19]
 |;;           .extern _LITEMASK        | [20]
+	.extern	_v_nxpl
 	.extern	_LITEMASK
 |;;           .extern _SKEWMASK        | [21]
 	.extern	_SKEWMASK
@@ -520,7 +521,8 @@ next_plane:
       jle      no_more_planes          | [303]
       movea.l  (-10,%a6),%a0           | [304]
       movea.l  (-14,%a6),%a1           | [305]
-      addq.l   #2,%a1                  | [306]
+      move.l   _v_nxpl,%d0              | [306] advance destination plane (LONG)
+      adda.l   %d0,%a1
       move.l   %a1,(-14,%a6)           | [307]
 |***	RESTORE	d0-d1	***
 	movem.l  (%a7),%d0-%d1

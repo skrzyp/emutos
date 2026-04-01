@@ -798,7 +798,8 @@ static void cur_display_clip(WORD op,Mcdb *sprite,MCS *mcs,UWORD *mask_start,UWO
 
         /* setup the things we need for each plane again */
         src = mask_start;               /* calculated mask data begin */
-        dst = addr++;                   /* current destination address */
+        dst = addr;                     /* current destination address */
+        addr += v_nxpl_w;           /* advance to next plane */
 
         /* loop through rows */
         for (row = mcs->len - 1; row >= 0; row--) {
@@ -954,7 +955,7 @@ void cur_display (Mcdb *sprite, MCS *mcs, WORD x, WORD y)
     /*
      * The rest of this function handles the no-L/R clipping case
      */
-    inc = v_planes;             /* # distance to next word in same plane */
+    inc = v_nxwd_w;          /* # distance to next word in same plane */
     dst_inc = v_lin_wr >> 1;    /* calculate number of words in a scan line */
 
     save = mcs->area;           /* for long stores */
@@ -969,7 +970,8 @@ void cur_display (Mcdb *sprite, MCS *mcs, WORD x, WORD y)
 
         /* setup the things we need for each plane again */
         src = mask_start;               /* calculated mask data begin */
-        dst = addr++;                   /* current destination address */
+        dst = addr;                     /* current destination address */
+        addr += v_nxpl_w;           /* advance to next plane */
 
         /* loop through rows */
         for (row = row_count - 1; row >= 0; row--) {
@@ -1067,8 +1069,9 @@ void cur_replace (MCS *mcs)
 {
     WORD plane, row;
     UWORD *addr, *src, *dst;
-    const WORD inc = v_planes;      /* # words to next word in same plane */
+    const WORD inc = v_nxwd_w;    /* # words to next word in same plane */
     const WORD dst_inc = v_lin_wr >> 1; /* # words in a scan line */
+    const LONG nxpl_w = v_nxpl_w; /* # words to next plane */
 
 #if CONF_WITH_VDI_16BIT
     /*
@@ -1093,7 +1096,8 @@ void cur_replace (MCS *mcs)
     if (mcs->stat & MCS_LONGS) {
         /* plane controller, draw cursor in each graphic plane */
         for (plane = v_planes - 1; plane >= 0; plane--) {
-            dst = addr++;           /* current destination address */
+            dst = addr;             /* current destination address */
+            addr += nxpl_w;         /* advance to next plane */
             /* loop through rows */
             for (row = mcs->len - 1; row >= 0; row--) {
                 *dst = *src++;
@@ -1110,7 +1114,8 @@ void cur_replace (MCS *mcs)
 
     /* plane controller, draw cursor in each graphic plane */
     for (plane = v_planes - 1; plane >= 0; plane--) {
-        dst = addr++;               /* current destination address */
+        dst = addr;                 /* current destination address */
+        addr += nxpl_w;             /* advance to next plane */
         /* loop through rows */
         for (row = mcs->len - 1; row >= 0; row--) {
             *dst = *src++;

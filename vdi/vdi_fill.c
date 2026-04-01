@@ -15,6 +15,7 @@
 #include "asm.h"
 #include "intmath.h"
 #include "aesext.h"
+#include "biosext.h"
 #include "vdi_defs.h"
 #include "vdistub.h"
 #include "tosvars.h"
@@ -632,22 +633,26 @@ void vdi_v_fillarea(Vwk * vwk)
 
 /*
  * get_color - Get color value of requested pixel.
+ *
+ * addr points to the word for plane 0 at the pixel's position.
  */
 static UWORD
 get_color (UWORD mask, UWORD * addr)
 {
     UWORD color = 0;                    /* clear the pixel value accumulator. */
-    WORD plane = v_planes;
+    const LONG nxpl_w = v_nxpl_w;       /* plane offset in words */
+    UWORD *p = addr + (LONG)(v_planes - 1) * nxpl_w;  /* start at highest plane */
+    WORD plane;
 
-    while(1) {
-        /* test the bit. */
-        if ( *--addr & mask )
-            color |= 1;         /* if 1, set color accumulator bit. */
-
-        if ( --plane == 0 )
-            break;
-
-        color <<= 1;            /* shift accumulator for next bit_plane. */
+    /* read from highest plane down to plane 0, using pointer
+     * decrement instead of multiply for 68000 performance.
+     * Shift-first: the initial shift of 0 is harmless. */
+    for (plane = v_planes - 1; plane >= 0; plane--)
+    {
+        color <<= 1;
+        if (*p & mask)
+            color |= 1;
+        p -= nxpl_w;
     }
 
     return color;       /* this is the color we are searching for */
@@ -683,7 +688,6 @@ pixelread(const WORD x, const WORD y)
 
     /* convert x,y to start address and bit mask */
     addr = get_start_addr(x, y);
-    addr += v_planes;                   /* start at highest-order bit_plane */
     mask = 0x8000 >> (x&0xf);           /* initial bit position in WORD */
 
     return get_color(mask, addr);       /* return the composed color value */
@@ -772,14 +776,16 @@ static WORD end_pts16(const VwkClip *clip, WORD x, WORD y, WORD *xleftout, WORD 
 static UWORD
 search_to_right (const VwkClip * clip, WORD x, UWORD mask, const UWORD search_col, UWORD * addr)
 {
+    const WORD nxwd_w = v_nxwd_w;
+
     /* is x coord < x resolution ? */
     while( x++ < clip->xmx_clip ) {
         UWORD color;
 
-        /* need to jump over interleaved bit_plane? */
+        /* advance to next pixel within the plane */
         rorw1(mask);    /* rotate right */
         if ( mask & 0x8000 )
-            addr += v_planes;
+            addr += nxwd_w;
 
         /* search, while pixel color != search color */
         color = get_color(mask, addr);
@@ -797,14 +803,16 @@ search_to_right (const VwkClip * clip, WORD x, UWORD mask, const UWORD search_co
 static UWORD
 search_to_left (const VwkClip * clip, WORD x, UWORD mask, const UWORD search_col, UWORD * addr)
 {
+    const WORD nxwd_w = v_nxwd_w;
+
     /* Now, search to the left. */
     while (x-- > clip->xmn_clip) {
         UWORD color;
 
-        /* need to jump over interleaved bit_plane? */
+        /* move to previous pixel within the plane */
         rolw1(mask);    /* rotate left */
         if ( mask & 0x0001 )
-            addr -= v_planes;
+            addr -= nxwd_w;
 
         /* search, while pixel color != search color */
         color = get_color(mask, addr);
@@ -852,7 +860,6 @@ static WORD end_pts(const VwkClip *clip, WORD x, WORD y, WORD *xleftout, WORD *x
 
     /* convert x,y to start address and bit mask */
     addr = get_start_addr(x, y);
-    addr += v_planes;                   /* start at highest-order bit_plane */
     mask = 0x8000 >> (x & 0x000f);   /* fetch the pixel mask. */
 
     /* get search color and the left and right end */
@@ -1190,11 +1197,16 @@ put_pix(void)
     color = INTIN[0];           /* device dependent encoded color bits */
     mask = 0x8000 >> (x&0xf);   /* initial bit position in WORD */
 
-    for (plane = v_planes; plane; plane--) {
-        if (color&0x0001)
-            *addr++ |= mask;
-        else
-            *addr++ &= ~mask;
-        color >>= 1;
+    {
+        const LONG nxpl_w = v_nxpl_w;
+        UWORD *p = addr;
+        for (plane = v_planes; plane; plane--) {
+            if (color&0x0001)
+                *p |= mask;
+            else
+                *p &= ~mask;
+            p += nxpl_w;
+            color >>= 1;
+        }
     }
 }

@@ -576,7 +576,9 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
 {
     const UWORD patmsk = attr->patmsk;
     const int vplanes = v_planes;
-    const int yinc = (v_lin_wr>>1) - vplanes;
+    const int nxwd_w = v_nxwd_w;
+    const LONG nxpl_w = v_nxpl_w;
+    const LONG yinc = (v_lin_wr>>1) - vplanes * nxpl_w;
     int centre, y;
     BLITPARM b;
 
@@ -592,18 +594,18 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
             int plane;
             UWORD color;
 
-            for (plane = 0, color = attr->color; plane < vplanes; plane++, color>>=1, b.addr++) {
+            for (plane = 0, color = attr->color; plane < vplanes; plane++, color>>=1, b.addr += nxpl_w) {
                 UWORD *work = b.addr;
                 UWORD pattern = ~attr->patptr[patind];
                 int n;
 
                 if (color & 0x0001) {
                     *work |= pattern & b.leftmask;  /* left section */
-                    work += vplanes;
+                    work += nxwd_w;
 #ifdef __mcoldfire__
                     for (n = centre; n >= 0; n--) { /* centre section */
                         *work |= pattern;
-                        work += vplanes;
+                        work += nxwd_w;
                     }
 #else
                     if (centre >= 0) {              /* centre section */
@@ -612,7 +614,7 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                                "or.w %2,(%1)\n\t"
                                "adda.w %3,%1\n\t"
                                "dbra %0,1b" : "+d"(n), "+a"(work) : "d"(pattern),
-                                              "r"(2*vplanes) : "memory", "cc");
+                                              "r"(v_nxwd) : "memory", "cc");
                     }
 #endif
                     if (b.rightmask) {              /* right section */
@@ -620,11 +622,11 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                     }
                 } else {
                     *work &= ~(pattern & b.leftmask);   /* left section */
-                    work += vplanes;
+                    work += nxwd_w;
 #ifdef __mcoldfire__
                     for (n = centre; n >= 0; n--) { /* centre section */
                         *work &= ~pattern;
-                        work += vplanes;
+                        work += nxwd_w;
                     }
 #else
                     if (centre >= 0) {              /* centre section */
@@ -633,7 +635,7 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                                "and.w %2,(%1)\n\t"
                                "adda.w %3,%1\n\t"
                                "dbra %0,1b" : "+d"(n), "+a"(work) : "d"(~pattern),
-                                              "r"(2*vplanes) : "memory", "cc");
+                                              "r"(v_nxwd) : "memory", "cc");
                     }
 #endif
                     if (b.rightmask) {              /* right section */
@@ -651,17 +653,17 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
             int plane;
             UWORD color;
 
-            for (plane = 0, color = attr->color; plane < vplanes; plane++, color>>=1, b.addr++) {
+            for (plane = 0, color = attr->color; plane < vplanes; plane++, color>>=1, b.addr += nxpl_w) {
                 UWORD *work = b.addr;
                 UWORD pattern = attr->patptr[patind];
                 int n;
 
                 *work ^= pattern & b.leftmask;      /* left section */
-                work += vplanes;
+                work += nxwd_w;
 #ifdef __mcoldfire__
                 for (n = centre; n >= 0; n--) {    /* centre section */
                     *work ^= pattern;
-                    work += vplanes;
+                    work += nxwd_w;
                 }
 #else
                 if (centre >= 0) {                  /* centre section */
@@ -670,7 +672,7 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                            "eor.w %2,(%1)\n\t"
                            "adda.w %3,%1\n\t"
                            "dbra %0,1b" : "+d"(n), "+a"(work) : "d"(pattern),
-                                          "r"(2*vplanes) : "memory", "cc");
+                                          "r"(v_nxwd) : "memory", "cc");
                 }
 #endif
                 if (b.rightmask) {                  /* right section */
@@ -687,18 +689,18 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
             int plane;
             UWORD color;
 
-            for (plane = 0, color = attr->color; plane < vplanes; plane++, color>>=1, b.addr++) {
+            for (plane = 0, color = attr->color; plane < vplanes; plane++, color>>=1, b.addr += nxpl_w) {
                 UWORD *work = b.addr;
                 UWORD pattern = attr->patptr[patind];
                 int n;
 
                 if (color & 0x0001) {
                     *work |= pattern & b.leftmask;  /* left section */
-                    work += vplanes;
+                    work += nxwd_w;
 #ifdef __mcoldfire__
                     for (n = centre; n >= 0; n--) { /* centre section */
                         *work |= pattern;
-                        work += vplanes;
+                        work += nxwd_w;
                     }
 #else
                     if (centre >= 0) {              /* centre section */
@@ -707,7 +709,7 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                                "or.w %2,(%1)\n\t"
                                "adda.w %3,%1\n\t"
                                "dbra %0,1b" : "+d"(n), "+a"(work) : "d"(pattern),
-                                              "r"(2*vplanes) : "memory", "cc");
+                                              "r"(v_nxwd) : "memory", "cc");
                     }
 #endif
                     if (b.rightmask) {              /* right section */
@@ -715,11 +717,11 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                     }
                 } else {
                     *work &= ~(pattern & b.leftmask);   /* left section */
-                    work += vplanes;
+                    work += nxwd_w;
 #ifdef __mcoldfire__
                     for (n = centre; n >= 0; n--) { /* centre section */
                         *work &= ~pattern;
-                        work += vplanes;
+                        work += nxwd_w;
                     }
 #else
                     if (centre >= 0) {              /* centre section */
@@ -728,7 +730,7 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                                "and.w %2,(%1)\n\t"
                                "adda.w %3,%1\n\t"
                                "dbra %0,1b" : "+d"(n), "+a"(work) : "d"(~pattern),
-                                              "r"(2*vplanes) : "memory", "cc");
+                                              "r"(v_nxwd) : "memory", "cc");
                     }
 #endif
                     if (b.rightmask) {              /* right section */
@@ -746,7 +748,7 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
             int plane;
             UWORD color;
 
-            for (plane = 0, color = attr->color; plane < vplanes; plane++, color>>=1, b.addr++) {
+            for (plane = 0, color = attr->color; plane < vplanes; plane++, color>>=1, b.addr += nxpl_w) {
                 UWORD data, *work = b.addr;
                 UWORD pattern = (color & 0x0001) ? attr->patptr[patind] : 0x0000;
                 int n;
@@ -754,11 +756,11 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                 data = *work & ~b.leftmask;         /* left section */
                 data |= pattern & b.leftmask;
                 *work = data;
-                work += vplanes;
+                work += nxwd_w;
 #ifdef __mcoldfire__
                 for (n = centre; n >= 0; n--) {     /* centre section */
                     *work = pattern;
-                    work += vplanes;
+                    work += nxwd_w;
                 }
 #else
                 if (centre >= 0) {                  /* centre section */
@@ -767,7 +769,7 @@ static void OPTIMIZE_SMALL swblit_rect_common(const VwkAttrib *attr, const Rect 
                            "move.w %2,(%1)\n\t"
                            "adda.w %3,%1\n\t"
                            "dbra %0,1b" : "+d"(n), "+a"(work) : "r"(pattern),
-                                          "r"(2*vplanes) : "memory", "cc");
+                                          "r"(v_nxwd) : "memory", "cc");
                 }
 #endif
                 if (b.rightmask) {                  /* right section */
@@ -1804,7 +1806,7 @@ static void draw_line(const Line *line, WORD wrt_mode, UWORD color)
     WORD dx;                    /* width of rectangle around line */
     WORD dy;                    /* height of rectangle around line */
     WORD yinc;                  /* in/decrease for each y step */
-    const WORD xinc = v_planes; /* positive increase for each x step, planes WORDS */
+    const WORD xinc = v_nxwd_w; /* positive increase for each x step (words) */
     UWORD msk;
     int plane;
     UWORD linemask = LN_MASK;   /* linestyle bits */
@@ -2069,7 +2071,7 @@ static void draw_line(const Line *line, WORD wrt_mode, UWORD color)
                 }
             }
         }
-        adr++;
+        adr += v_nxpl_w;
         color >>= 1;    /* shift color index: next plane */
     }
     LN_MASK = linemask;
@@ -2172,7 +2174,7 @@ static void vertical_line(const Line *line, WORD wrt_mode, UWORD color)
     bit = 0x8000 >> (line->x1&0xf);             /* initial bit position in WORD */
     bitcomp = ~bit;
 
-    for (plane = v_planes-1; plane >= 0; plane--, start++, color >>= 1) {
+    for (plane = v_planes-1; plane >= 0; plane--, start += v_nxpl_w, color >>= 1) {
         /* load values fresh for this bitplane */
         addr = start;           /* initial start address for changes */
         linemask = LN_MASK;

@@ -103,6 +103,7 @@
 //  Global variables referenced.                       //
 /////////////////////////////////////////////////////////
 
+        .extern _v_nxpl
         .extern _SOURCEX
         .extern _SOURCEY
         .extern _LITEMASK
@@ -546,7 +547,7 @@ next_plane:
         jle     no_more_planes          // loop for next plane
         movea.l sform(a6),a0
         movea.l dform(a6),a1
-        addq.l  #2,a1                   // advance destination plane
+        add.l   _v_nxpl,a1              // advance destination plane
         move.l  a1,dform(a6)            // save dest. starting address
         btst.b  #SKEW,STYLE+1(a6)       // only skew screws up other planes
         jeq     plane_loop              // br to short init if not skew
