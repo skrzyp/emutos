@@ -66,8 +66,11 @@
 #define BPLCON0 *(volatile UWORD*)0xdff100
 #define BPLCON1 *(volatile UWORD*)0xdff102
 #define BPL1MOD *(volatile UWORD*)0xdff108
-#define COLOR00 *(volatile UWORD*)0xdff180
-#define COLOR01 *(volatile UWORD*)0xdff182
+#define BPL2MOD *(volatile UWORD*)0xdff10a
+#define COLOR_REGS ((volatile UWORD*)0xdff180)
+
+/* Copper list: WAIT(2) + BPLxPTH/PTL per plane(4*N) + END(2) */
+#define COPPER_LIST_WORDS  (2 + MAX_AMIGA_PLANES * 4 + 2)
 
 /* CIA A registers */
 #define CIAAPRA    *(volatile UBYTE*)0xbfe001
@@ -570,18 +573,82 @@ void amiga_add_alt_ram(void)
 UWORD amiga_screen_width;
 UWORD amiga_screen_width_in_bytes;
 UWORD amiga_screen_height;
+UWORD amiga_screen_planes;
 const UBYTE *amiga_screenbase;
 UWORD *copper_list;
 
+/* Shadow palette for amiga_setcolor() to return previous values */
+static UWORD amiga_palette_shadow[16];
+
 ULONG amiga_initial_vram_size(void)
 {
-    return 640UL * 512 / 8;
+    /* Must be large enough for the biggest supported mode.
+     * 640x400x1 = 32000, 640x200x2 = 32000, 320x200x4 = 32000.
+     * PAL: 320x256x4 = 40960, 640x256x2 = 40960.
+     * Use 64KB for margin. Note: PAL colour interlace modes
+     * (e.g. 320x512x4 = 81920) would need a larger allocation. */
+    return 64UL * 1024;
 }
 
-static void amiga_set_videomode(UWORD width, UWORD height)
+/*
+ * Rebuild the Copper list for the current video mode.
+ * Must be called whenever amiga_screen_planes changes.
+ * Screen base address changes (amiga_setphys) are handled by the VBL
+ * handler which patches BPLxPT values every frame.
+ */
+static void amiga_rebuild_copper_list(void)
+{
+    UWORD *cl;
+    ULONG plane_size;
+    int i;
+
+    if (!copper_list)
+        return;
+
+    cl = copper_list;
+    /* Copper WAIT: VP >= 0x0a (line 10), any HP. Mask 0xff00 = vertical only.
+     * This gives the VBL handler time to patch the BPL pointers before
+     * the Copper reads them. */
+    *cl++ = 0x0a01;
+    *cl++ = 0xff00;
+
+    /* Compute plane_size locally because this function may be called
+     * before update_rez_dependent() sets v_nxpl (e.g. during boot).
+     * The VBL handler uses v_nxpl for the same purpose at runtime. */
+    plane_size = (ULONG)amiga_screen_width_in_bytes * amiga_screen_height;
+    for (i = 0; i < (int)amiga_screen_planes; i++)
+    {
+        ULONG addr = (ULONG)amiga_screenbase + (ULONG)i * plane_size;
+        *cl++ = 0x00e0 + i * 4;    /* BPLxPTH register */
+        *cl++ = HIWORD(addr);
+        *cl++ = 0x00e2 + i * 4;    /* BPLxPTL register */
+        *cl++ = LOWORD(addr);
+    }
+
+    *cl++ = 0xffff; /* Impossible WAIT = end of Copper list */
+    *cl++ = 0xfffe;
+
+    /* Restart Copper with updated list.
+     * Note: this should be called with interrupts disabled (set_sr(0x2700))
+     * during mode changes to prevent the VBL handler from seeing a
+     * partially-built list. The Copper DMA itself may still be running,
+     * but COPJMP1 forces it to restart from the new list head. */
+    COP1LCH = copper_list;
+    COPJMP1 = 0;
+}
+
+/* Default 16-color ST palette in Amiga OCS 12-bit RGB format */
+static const UWORD amiga_dflt_palette[16] = {
+    0x0fff, 0x0f00, 0x00f0, 0x0ff0,
+    0x000f, 0x0f0f, 0x00ff, 0x0555,
+    0x0333, 0x0f33, 0x03f3, 0x0ff3,
+    0x033f, 0x0f3f, 0x03ff, 0x0000
+};
+
+static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
 {
     UWORD lowres_height = height;
-    UWORD bplcon0 = 0x1200; /* 1 bit-plane, COLOR ON */
+    UWORD bplcon0;
     UWORD bpl1mod = 0; /* Modulo */
     UWORD ddfstrt = 0x0038; /* Data-fetch start for low resolution */
     UWORD ddfstop = 0x00d0; /* Data-fetch stop for low resolution */
@@ -591,10 +658,28 @@ static void amiga_set_videomode(UWORD width, UWORD height)
     UWORD vstop; /* Display window vertical stop */
     UWORD diwstrt; /* Display window start */
     UWORD diwstop; /* Display window stop */
+    UWORD ncolors;
+    int i;
+
+    ULONG vram_needed = (ULONG)(width / 8) * height * planes;
+    WORD old_sr;
+
+    if (vram_needed > amiga_initial_vram_size())
+    {
+        KDEBUG(("amiga_set_videomode: %ux%ux%u needs %lu bytes, only %lu available\n",
+                width, height, planes, vram_needed, amiga_initial_vram_size()));
+        return;
+    }
+
+    old_sr = set_sr(0x2700);   /* disable interrupts during mode change */
 
     amiga_screen_width = width;
     amiga_screen_width_in_bytes = width / 8;
     amiga_screen_height = height;
+    amiga_screen_planes = planes;
+
+    /* BPLCON0: bits 14-12 = number of bitplanes, bit 9 = COLOR ON */
+    bplcon0 = 0x0200 | ((planes & 7) << 12);
 
     if (width >= 640)
     {
@@ -618,35 +703,61 @@ static void amiga_set_videomode(UWORD width, UWORD height)
     diwstop = MAKE_UWORD(vstop, hstop);
 
     KDEBUG(("BPLCON0 = 0x%04x\n", bplcon0));
-    KDEBUG(("BPL1MOD = 0x%04x\n", bpl1mod));
     KDEBUG(("DDFSTRT = 0x%04x\n", ddfstrt));
     KDEBUG(("DDFSTOP = 0x%04x\n", ddfstop));
     KDEBUG(("DIWSTRT = 0x%04x\n", diwstrt));
     KDEBUG(("DIWSTOP = 0x%04x\n", diwstop));
+    KDEBUG(("BPL1MOD = 0x%04x\n", bpl1mod));
+    KDEBUG(("planes  = %d\n", planes));
 
     BPLCON0 = bplcon0; /* Bit Plane Control */
     BPLCON1 = 0;       /* Horizontal scroll value 0 */
-    BPL1MOD = bpl1mod; /* Modulo = line width in interlaced mode */
+    BPL1MOD = bpl1mod; /* Modulo for odd planes */
+    BPL2MOD = bpl1mod; /* Modulo for even planes */
     DDFSTRT = ddfstrt; /* Data-fetch start */
     DDFSTOP = ddfstop; /* Data-fetch stop */
     DIWSTRT = diwstrt; /* Set display window start */
     DIWSTOP = diwstop; /* Set display window stop */
 
-    /* Set up color registers */
-    COLOR00 = 0x0fff; /* Background color = white */
-    COLOR01 = 0x0000; /* Foreground color = black */
+    /* Build the palette shadow: default ST colours + fixup + clear stale.
+     * Fixup: register 1 must be black in mono, register 3 in ST-Medium
+     * (matches fixup_ste_palette on Atari — foreground text colour). */
+    ncolors = 1 << planes;
+    for (i = 0; i < 16; i++)
+        amiga_palette_shadow[i] = (i < (int)ncolors) ? amiga_dflt_palette[i] : 0;
+    if (planes == 1)
+        amiga_palette_shadow[1] = amiga_dflt_palette[15]; /* black */
+    else if (planes == 2)
+        amiga_palette_shadow[3] = amiga_dflt_palette[15]; /* black */
 
-    if (width == 640 && height == 400)
+    /* Write all 16 registers so stale values are cleared on mode downgrade */
+    for (i = 0; i < 16; i++)
+        COLOR_REGS[i] = amiga_palette_shadow[i];
+
+    if (width == 320 && height == 200 && planes == 4)
+        sshiftmod = ST_LOW;
+    else if (width == 640 && height == 200 && planes == 2)
+        sshiftmod = ST_MEDIUM;
+    else if (width == 640 && height == 400 && planes == 1)
         sshiftmod = ST_HIGH;
     else
         sshiftmod = FALCON_REZ;
+
+    /* Rebuild Copper list for the new plane count */
+    amiga_rebuild_copper_list();
+
+    set_sr(old_sr);             /* restore interrupts */
 }
 
 WORD amiga_check_moderez(WORD moderez)
 {
     WORD current_mode, return_mode;
 
-    if (moderez == 0xff02) /* ST High */
+    if (moderez == 0xff00) /* ST Low: 320x200 16c */
+        moderez = VIDEL_COMPAT|VIDEL_4BPP;
+    else if (moderez == 0xff01) /* ST Medium: 640x200 4c */
+        moderez = VIDEL_COMPAT|VIDEL_2BPP|VIDEL_80COL;
+    else if (moderez == 0xff02) /* ST High: 640x400 mono */
         moderez = VIDEL_COMPAT|VIDEL_1BPP|VIDEL_80COL|VIDEL_VERTICAL;
 
     if (moderez < 0)                /* ignore other ST video modes */
@@ -659,44 +770,18 @@ WORD amiga_check_moderez(WORD moderez)
 
 void amiga_get_current_mode_info(UWORD *planes, UWORD *hz_rez, UWORD *vt_rez)
 {
-    *planes = 1;
+    *planes = amiga_screen_planes;
     *hz_rez = amiga_screen_width;
     *vt_rez = amiga_screen_height;
 }
 
 void amiga_screen_init(void)
 {
-    amiga_set_videomode(640, 400);
+    /* Allocate the Copper list first, so amiga_set_videomode() can
+     * populate it immediately via amiga_rebuild_copper_list(). */
+    copper_list = (UWORD *)balloc_stram(sizeof(UWORD) * COPPER_LIST_WORDS, FALSE);
 
-    /* The VBL will update the Copper list below with any new value
-     * of amiga_screenbase, eventually adjusted for interlace.
-     * It is *mandatory* to reset BPL1PTH/BPL1PTL on each VBL.
-     * It could have been done manually in the VBL interrupt handler, but in
-     * that case the display would be wrong when interrupts are turned off.
-     * On the other hand, with a Copper list, the bitplane pointer is always
-     * reset correctly, even if the CPU interrupts are turned off.
-     * The only remaining issue is that the interlaced fields are not
-     * properly switched when interrupts are turned off. It is a minor issue,
-     * as this should normally not happen for a long time. And even in that
-     * case, displayed texts are still readable, even if a bit distorted.
-     * The Copper list waits a few lines at the top to give the VBL interrupt
-     * handler enough time to update it.
-     */
-
-    /* Set up the Copper list (must be in ST-RAM) */
-    copper_list = (UWORD *)balloc_stram(sizeof(UWORD) * 8, FALSE);
-    copper_list[0] = 0x0a01; /* Wait line 10 to give time to the VBL routine */
-    copper_list[1] = 0xff00; /* Vertical wait only */
-    copper_list[2] = 0x0e0; /* BPL1PTH */
-    copper_list[3] = HIWORD(amiga_screenbase);
-    copper_list[4] = 0x0e2; /* BPL1PTL */
-    copper_list[5] = LOWORD(amiga_screenbase);
-    copper_list[6] = 0xffff; /* End of      */
-    copper_list[7] = 0xfffe; /* Copper list */
-
-    /* Initialize the Copper */
-    COP1LCH = copper_list;
-    COPJMP1 = 0;
+    amiga_set_videomode(320, 200, 4);   /* boot into ST-Low (16 colours) */
 
     /* Enable VBL interrupt */
     VEC_LEVEL3 = amiga_vbl;
@@ -719,21 +804,33 @@ const UBYTE *amiga_physbase(void)
 
 WORD amiga_setcolor(WORD colorNum, WORD color)
 {
+    WORD old;
+
     KDEBUG(("amiga_setcolor(%d, 0x%04x)\n", colorNum, color));
 
-    if (colorNum == 0)
-        return 0x777;
-    else
-        return 0x000;
+    colorNum &= 0x0f;
+    old = amiga_palette_shadow[colorNum];
+
+    if (color >= 0)
+    {
+        amiga_palette_shadow[colorNum] = color & 0x0fff;
+        COLOR_REGS[colorNum] = color & 0x0fff;
+    }
+
+    return old;
 }
 
 void amiga_setrez(WORD rez, WORD videlmode)
 {
-    UWORD width, height;
+    UWORD width, height, planes;
 
-    /* Currently, we only support monochrome video modes */
-    if ((videlmode & VIDEL_BPPMASK) != VIDEL_1BPP)
-        return;
+    switch (videlmode & VIDEL_BPPMASK)
+    {
+    case VIDEL_1BPP: planes = 1; break;
+    case VIDEL_2BPP: planes = 2; break;
+    case VIDEL_4BPP: planes = 4; break;
+    default: return; /* unsupported depth */
+    }
 
     width = (videlmode & VIDEL_80COL) ? 640 : 320;
 
@@ -744,12 +841,19 @@ void amiga_setrez(WORD rez, WORD videlmode)
     else
         height = (videlmode & VIDEL_VERTICAL) ? 400 : 200;
 
-    amiga_set_videomode(width, height);
+    amiga_set_videomode(width, height, planes);
 }
 
 WORD amiga_vgetmode(void)
 {
-    WORD mode = VIDEL_1BPP;
+    WORD mode;
+
+    switch (amiga_screen_planes)
+    {
+    case 2:  mode = VIDEL_2BPP; break;
+    case 4:  mode = VIDEL_4BPP; break;
+    default: mode = VIDEL_1BPP; break;
+    }
 
     if (amiga_screen_width >= 640)
         mode |= VIDEL_80COL;
@@ -765,7 +869,9 @@ WORD amiga_vgetmode(void)
     else if (amiga_screen_height == 400)
         mode |= VIDEL_VERTICAL;
 
-    if (amiga_screen_width == 640 && amiga_screen_height == 400)
+    /* VIDEL_COMPAT mirrors the sshiftmod value set by amiga_set_videomode():
+     * ST_LOW (320x200 16c), ST_MEDIUM (640x200 4c), ST_HIGH (640x400 mono) */
+    if (sshiftmod != FALCON_REZ)
         mode |= VIDEL_COMPAT;
 
     return mode;

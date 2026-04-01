@@ -831,7 +831,7 @@ void screen_get_current_mode_info(UWORD *planes, UWORD *hz_rez, UWORD *vt_rez)
 WORD get_palette(void)
 {
 #ifdef MACHINE_AMIGA
-    return 2;               /* we currently only support monochrome */
+    return (v_planes == 1) ? 2 : 4096; /* mono: B/W; colour: OCS 12-bit */
 #else
     WORD palette;
 

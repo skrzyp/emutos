@@ -15,6 +15,8 @@
 
 #ifdef MACHINE_AMIGA
 
+#define MAX_AMIGA_PLANES 4  /* max supported bitplanes (OCS: up to 6 for EHB/HAM) */
+
 struct IDE
 {
     UBYTE filler00[4];
@@ -45,6 +47,7 @@ extern const UBYTE scancode_atari_from_amiga[128];
 extern UWORD amiga_screen_width;
 extern UWORD amiga_screen_width_in_bytes;
 extern UWORD amiga_screen_height;
+extern UWORD amiga_screen_planes;
 extern const UBYTE *amiga_screenbase;
 extern UWORD *copper_list;
 extern int has_gayle;
