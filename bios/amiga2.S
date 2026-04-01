@@ -253,7 +253,7 @@ amiga_int_5_end:
 // VBL handler: patches the Copper list BPLxPT registers every frame
 // for interlace field switching and screen base address changes.
 // Must complete before the Copper WAIT at line 10 (~2270 cycles budget
-// at 7.09 MHz PAL).  The setbpl loop uses ~58 cycles/plane = ~232 for 4.
+// at 7.09 MHz PAL).  The setbpl loop uses ~58 cycles/plane (~290 for 5).
 
         .globl  _amiga_vbl
 _amiga_vbl:
@@ -293,6 +293,14 @@ setbpl:
         add.l   d1,d0                  // advance to next plane
         lea     8(a0),a0               // next BPLxPTH/PTL pair (4 words = 8 bytes)
         dbra    d2,setbpl
+
+        // a0 now points to the SPR0PT entry in the Copper list.
+        // Patch SPR0PTH/SPR0PTL from the current sprite pointer.
+        .extern _amiga_sprite_ptr
+        move.l  _amiga_sprite_ptr,d0
+        move.w  d0,6(a0)               // SPR0PTL (low word)
+        swap    d0
+        move.w  d0,2(a0)               // SPR0PTH (high word)
 
         jbsr    _int_vbl                // Call the standard VBL handler
 

@@ -65,12 +65,17 @@
 #define ADKCON  *(volatile UWORD*)0xdff09e
 #define BPLCON0 *(volatile UWORD*)0xdff100
 #define BPLCON1 *(volatile UWORD*)0xdff102
+#define BPLCON2 *(volatile UWORD*)0xdff104
 #define BPL1MOD *(volatile UWORD*)0xdff108
 #define BPL2MOD *(volatile UWORD*)0xdff10a
 #define COLOR_REGS ((volatile UWORD*)0xdff180)
 
-/* Copper list: WAIT(2) + BPLxPTH/PTL per plane(4*N) + END(2) */
-#define COPPER_LIST_WORDS  (2 + MAX_AMIGA_PLANES * 4 + 2)
+/* Copper list: WAIT(2) + BPLxPT(4*N) + SPRxPT(4*8) + END(2) */
+#define COPPER_LIST_WORDS  (2 + MAX_AMIGA_PLANES * 4 + 8 * 4 + 2)
+
+/* Sprite data: pos/ctl (2 words) + 16 lines * 2 words (32) + terminator (2) = 36 words */
+#define SPRITE_LINES      16
+#define SPRITE_DATA_WORDS (2 + SPRITE_LINES * 2 + 2)
 
 /* CIA A registers */
 #define CIAAPRA    *(volatile UBYTE*)0xbfe001
@@ -570,6 +575,8 @@ void amiga_add_alt_ram(void)
 /* Screen                                                                     */
 /******************************************************************************/
 
+extern WORD m_cdb_bg, m_cdb_fg;  /* mouse cursor bg/fg color, from lineavars.S */
+
 UWORD amiga_screen_width;
 UWORD amiga_screen_width_in_bytes;
 UWORD amiga_screen_height;
@@ -578,8 +585,17 @@ UWORD amiga_screen_planes;
 const UBYTE *amiga_screenbase;
 UWORD *copper_list;
 
+/* Hardware sprite 0 (mouse cursor) */
+static UWORD *sprite0_data;        /* Chip RAM: sprite DMA data block */
+static UWORD *sprite0_null;        /* Chip RAM: null sprite (hidden) */
+UWORD *amiga_sprite_ptr;           /* current sprite pointer (data or null) */
+static WORD sprite_xhot, sprite_yhot;
+static UWORD sprite_hstart_off;    /* display window horizontal offset */
+static UWORD sprite_vstart_off;    /* display window vertical offset */
+static BOOL sprite_hires;          /* TRUE if 640-pixel mode */
+
 /* Shadow palette for amiga_setcolor() to return previous values */
-static UWORD amiga_palette_shadow[16];
+UWORD amiga_palette_shadow[16];
 
 ULONG amiga_initial_vram_size(void)
 {
@@ -624,6 +640,16 @@ static void amiga_rebuild_copper_list(void)
         *cl++ = HIWORD(addr);
         *cl++ = 0x00e2 + i * 4;    /* BPLxPTL register */
         *cl++ = LOWORD(addr);
+    }
+
+    /* Sprite pointers: SPR0 -> active cursor, SPR1-7 -> null (no garbage) */
+    for (i = 0; i < 8; i++)
+    {
+        ULONG spr_addr = (ULONG)((i == 0) ? amiga_sprite_ptr : sprite0_null);
+        *cl++ = 0x0120 + i * 4;    /* SPRxPTH */
+        *cl++ = HIWORD(spr_addr);
+        *cl++ = 0x0122 + i * 4;    /* SPRxPTL */
+        *cl++ = LOWORD(spr_addr);
     }
 
     *cl++ = 0xffff; /* Impossible WAIT = end of Copper list */
@@ -718,6 +744,7 @@ static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
 
     BPLCON0 = bplcon0; /* Bit Plane Control */
     BPLCON1 = 0;       /* Horizontal scroll value 0 */
+    BPLCON2 = 0x0024;  /* PF1P=4, PF2P=4: all sprites in front of playfields */
     BPL1MOD = bpl1mod; /* Modulo for odd planes */
     BPL2MOD = bpl1mod; /* Modulo for even planes */
     DDFSTRT = ddfstrt; /* Data-fetch start */
@@ -727,7 +754,7 @@ static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
 
     /* Build the palette shadow: default ST colours + fixup + clear stale.
      * Fixup: register 1 must be black in mono, register 3 in ST-Medium
-     * (matches fixup_ste_palette on Atari — foreground text colour). */
+     * (matches fixup_ste_palette on Atari -- foreground text colour). */
     ncolors = 1 << planes;
     for (i = 0; i < 16; i++)
         amiga_palette_shadow[i] = (i < (int)ncolors) ? amiga_dflt_palette[i] : 0;
@@ -748,6 +775,11 @@ static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
         sshiftmod = ST_HIGH;
     else
         sshiftmod = FALCON_REZ;
+
+    /* Cache display window origin for sprite positioning */
+    sprite_hstart_off = hstart;     /* 0x81 for standard modes */
+    sprite_vstart_off = vstart;
+    sprite_hires = (width >= 640);
 
     /* Rebuild Copper list for the new plane count */
     amiga_rebuild_copper_list();
@@ -787,14 +819,21 @@ void amiga_screen_init(void)
      * populate it immediately via amiga_rebuild_copper_list(). */
     copper_list = (UWORD *)balloc_stram(sizeof(UWORD) * COPPER_LIST_WORDS, FALSE);
 
+    /* Allocate sprite 0 data in Chip RAM (72 bytes + 4-byte null sprite) */
+    sprite0_data = (UWORD *)balloc_stram(sizeof(UWORD) * SPRITE_DATA_WORDS, FALSE);
+    sprite0_null = (UWORD *)balloc_stram(sizeof(UWORD) * 4, FALSE);
+    memset(sprite0_data, 0, sizeof(UWORD) * SPRITE_DATA_WORDS);
+    memset(sprite0_null, 0, sizeof(UWORD) * 4);
+    amiga_sprite_ptr = sprite0_null;    /* cursor starts hidden */
+
     amiga_set_videomode(320, 200, 4);   /* boot into ST-Low (16 colours) */
 
     /* Enable VBL interrupt */
     VEC_LEVEL3 = amiga_vbl;
     INTENA = SETBITS | INTEN | VERTB;
 
-    /* Start the DMA, with bit plane and Copper */
-    DMACON = SETBITS | COPEN | BPLEN | DMAEN;
+    /* Start the DMA: bitplanes, Copper, and sprites */
+    DMACON = SETBITS | COPEN | BPLEN | SPREN | DMAEN;
 }
 
 void amiga_setphys(const UBYTE *addr)
@@ -821,9 +860,116 @@ WORD amiga_setcolor(WORD colorNum, WORD color)
     {
         amiga_palette_shadow[colorNum] = color & 0x0fff;
         COLOR_REGS[colorNum] = color & 0x0fff;
+
+        /* If this color is used by the mouse cursor, update sprite palette */
+        if (colorNum == (m_cdb_bg & 0x0f)
+         || colorNum == (m_cdb_fg & 0x0f))
+            amiga_update_sprite_colors();
     }
 
     return old;
+}
+
+/******************************************************************************/
+/* Hardware sprite cursor                                                     */
+/******************************************************************************/
+
+/*
+ * amiga_update_sprite_colors - set sprite 0 palette from cursor colors.
+ * COLOR17 = background (mask outline), COLOR18/19 = foreground (body).
+ */
+void amiga_update_sprite_colors(void)
+{
+    COLOR_REGS[17] = amiga_palette_shadow[m_cdb_bg & 0x0f];
+    COLOR_REGS[18] = amiga_palette_shadow[m_cdb_fg & 0x0f];
+    COLOR_REGS[19] = amiga_palette_shadow[m_cdb_fg & 0x0f];
+}
+
+/*
+ * amiga_set_sprite_shape - convert VDI Mcdb mask+data to sprite format.
+ * Called from set_mouse_form() when the cursor shape changes.
+ */
+void amiga_set_sprite_shape(WORD xhot, WORD yhot,
+                            WORD bg_col, WORD fg_col,
+                            const UWORD *maskdata)
+{
+    UWORD *dst;
+    int i;
+
+    sprite_xhot = xhot;
+    sprite_yhot = yhot;
+
+    /* Convert 16 lines of VDI mask+data to sprite bitplanes.
+     * plane0 = mask & ~data (background outline)
+     * plane1 = mask & data  (foreground body)
+     * Both 0 = transparent */
+    dst = sprite0_data + 2;     /* skip pos/ctl words */
+    for (i = 0; i < SPRITE_LINES; i++)
+    {
+        UWORD mask = *maskdata++;
+        UWORD data = *maskdata++;
+        *dst++ = mask & ~data;  /* plane 0: bg pixels */
+        *dst++ = mask & data;   /* plane 1: fg pixels */
+    }
+    dst[0] = 0;                 /* terminator */
+    dst[1] = 0;
+
+    /* Update sprite palette */
+    COLOR_REGS[17] = amiga_palette_shadow[bg_col & 0x0f];
+    COLOR_REGS[18] = amiga_palette_shadow[fg_col & 0x0f];
+    COLOR_REGS[19] = amiga_palette_shadow[fg_col & 0x0f];
+}
+
+/*
+ * amiga_move_sprite - update sprite 0 position from screen coordinates.
+ * Called from mouse_int via user_cur vector (d0=x, d1=y in GCURX/GCURY).
+ */
+void amiga_move_sprite(WORD x, WORD y)
+{
+    WORD hstart, vstart, vstop;
+    UWORD sprpos, sprctl;
+
+    x -= sprite_xhot;
+    y -= sprite_yhot;
+
+    /* Convert to hardware sprite coordinates.
+     * Sprite HSTART is always in lores pixels (divide x by 2 for hires).
+     * Sprite VSTART is in field lines (divide y by 2 for interlace). */
+    hstart = (sprite_hires ? (x >> 1) : x) + sprite_hstart_off;
+    if (amiga_screen_height >= 400)
+        vstart = (y >> 1) + sprite_vstart_off;
+    else
+        vstart = y + sprite_vstart_off;
+
+    /* Clamp to valid sprite coordinate range (9-bit unsigned) */
+    if (hstart < 0) hstart = 0;
+    if (vstart < 0) vstart = 0;
+    vstop = vstart + SPRITE_LINES;
+
+    /* Encode SPRxPOS and SPRxCTL per HRM.
+     * VSTART/VSTOP are 9-bit: low 8 in high byte, bit 8 in CTL. */
+    sprpos = ((vstart & 0xff) << 8) | ((hstart >> 1) & 0xff);
+    sprctl = ((vstop & 0xff) << 8)
+           | ((vstart >> 6) & 0x04)     /* VSTART bit 8 -> CTL bit 2 */
+           | ((vstop >> 7) & 0x02)      /* VSTOP bit 8 -> CTL bit 1 */
+           | (hstart & 0x01);           /* HSTART bit 0 -> CTL bit 0 */
+
+    sprite0_data[0] = sprpos;
+    sprite0_data[1] = sprctl;
+}
+
+/*
+ * amiga_show_sprite / amiga_hide_sprite - toggle sprite visibility
+ * by switching the DMA pointer between active data and null sprite.
+ */
+void amiga_show_sprite(void)
+{
+    amiga_sprite_ptr = sprite0_data;
+}
+
+void amiga_hide_sprite(void)
+{
+    amiga_sprite_ptr = sprite0_null;
 }
 
 void amiga_setrez(WORD rez, WORD videlmode)

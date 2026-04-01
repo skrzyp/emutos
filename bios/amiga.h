@@ -51,6 +51,8 @@ extern ULONG amiga_interlace_offset;
 extern UWORD amiga_screen_planes;
 extern const UBYTE *amiga_screenbase;
 extern UWORD *copper_list;
+extern UWORD *amiga_sprite_ptr;     /* current sprite DMA pointer (data or null) */
+extern UWORD amiga_palette_shadow[16];
 extern int has_gayle;
 
 void amiga_machine_detect(void);
@@ -71,6 +73,14 @@ void amiga_setrez(WORD rez, WORD videlmode);
 void amiga_kbd_init(void);
 void amiga_ikbd_writeb(UBYTE b);
 void amiga_extra_vbl(void);
+
+/* Hardware sprite cursor */
+void amiga_set_sprite_shape(WORD xhot, WORD yhot, WORD bg_col, WORD fg_col,
+                            const UWORD *maskdata);
+void amiga_move_sprite(WORD x, WORD y);
+void amiga_show_sprite(void);
+void amiga_hide_sprite(void);
+void amiga_update_sprite_colors(void);
 void amiga_clock_init(void);
 ULONG amiga_getdt(void);
 

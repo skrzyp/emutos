@@ -26,6 +26,9 @@
 #if WITH_AES
 #include "../aes/aesstub.h"
 #endif
+#ifdef MACHINE_AMIGA
+#include "../bios/amiga.h"
+#endif
 
 #define MOUSE_WIDTH     16      /* in pixels */
 #define MOUSE_HEIGHT    16
@@ -135,7 +138,12 @@ static void dis_cur(void)
     }
 
     /* HIDE_CNT is precisely 1 at this point */
+#ifdef MACHINE_AMIGA
+    amiga_move_sprite(GCURX, GCURY);
+    amiga_show_sprite();
+#else
     cur_display(&mouse_cdb, mcs_ptr, GCURX, GCURY);  /* display the cursor */
+#endif
     draw_flag = 0;              /* disable VBL drawing routine */
     HIDE_CNT--;
 }
@@ -163,7 +171,11 @@ static void hide_cur(void)
      */
     HIDE_CNT += 1;              /* increment it */
     if (HIDE_CNT == 1) {        /* if cursor was not hidden... */
+#ifdef MACHINE_AMIGA
+        amiga_hide_sprite();
+#else
         cur_replace(mcs_ptr);   /* remove the cursor from screen */
+#endif
         draw_flag = 0;          /* disable VBL drawing routine */
     }
 }
@@ -489,6 +501,11 @@ static void set_mouse_form(const MFORM *src, Mcdb *dst)
     }
 
     mouse_flag -= 1;                    /* re-enable mouse drawing */
+
+#ifdef MACHINE_AMIGA
+    amiga_set_sprite_shape(dst->xhot, dst->yhot, dst->bg_col, dst->fg_col,
+                           dst->maskdata);
+#endif
 }
 
 
@@ -673,6 +690,18 @@ static void vb_draw(void)
     if (mouse_flag || HIDE_CNT)
         return;
 
+#ifdef MACHINE_AMIGA
+    /* Hardware sprite: just update position, no framebuffer access needed */
+    old_sr = set_sr(0x2700);
+    if (draw_flag) {
+        draw_flag = FALSE;
+        x = newx;
+        y = newy;
+        set_sr(old_sr);
+        amiga_move_sprite(x, y);
+    } else
+        set_sr(old_sr);
+#else
     old_sr = set_sr(0x2700);        /* disable interrupts */
     if (draw_flag) {
         draw_flag = FALSE;
@@ -683,6 +712,7 @@ static void vb_draw(void)
         cur_display(&mouse_cdb, mcs_ptr, x, y); /* display the cursor */
     } else
         set_sr(old_sr);
+#endif
 }
 
 
