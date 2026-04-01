@@ -24,7 +24,29 @@
 #include "sound.h"              /* for bell() */
 #include "string.h"
 #include "conout.h"
+#include "amiga.h"              /* for MAX_AMIGA_PLANES */
 #include "../vdi/vdi_defs.h"    /* for phys_work stuff */
+
+#ifdef MACHINE_AMIGA
+/* Contiguous planes: copy/move each plane separately.
+ * scroll_up: dst < src, so memcpy is safe and faster.
+ * scroll_down: dst > src within each plane, must use memmove. */
+static void scroll_up_planes(UBYTE *dst, UBYTE *src, ULONG count)
+{
+    int plane;
+    ULONG poff = 0;
+    for (plane = 0; plane < v_planes; plane++, poff += v_nxpl)
+        memcpy(dst + poff, src + poff, count);
+}
+
+static void scroll_down_planes(UBYTE *dst, UBYTE *src, ULONG count)
+{
+    int plane;
+    ULONG poff = 0;
+    for (plane = 0; plane < v_planes; plane++, poff += v_nxpl)
+        memmove(dst + poff, src + poff, count);
+}
+#endif
 
 #if CONF_WITH_VIDEL
 static const UWORD falcon_default_palette[16] = {
@@ -629,7 +651,34 @@ void blank_out(int topx, int topy, int botx, int boty)
     rows = (boty - topy + 1) * v_cel_ht;
 
     if (v_planes > 1) {
-        /* Color modes are optimized for handling 2 planes at once */
+#ifdef MACHINE_AMIGA
+        /* Contiguous planes: fill each plane with memset. */
+        UBYTE plane_byte[MAX_AMIGA_PLANES];
+        UWORD fill_len = pairs * v_nxwd;    /* bytes to fill per row per plane */
+        UWORD i;
+
+        for (i = 0; i < v_planes; i++) {
+            plane_byte[i] = (color & 0x0001) ? 0xff : 0x00;
+            color >>= 1;
+        }
+
+        if (fill_len == (UWORD)v_lin_wr) {
+            /* Full width: rows within each plane are contiguous */
+            ULONG total = (ULONG)fill_len * rows;
+            for (i = 0; i < v_planes; i++)
+                memset(addr + (ULONG)i * v_nxpl, plane_byte[i], total);
+        } else {
+            /* Partial width: planes-outer for contiguous plane locality */
+            for (i = 0; i < v_planes; i++) {
+                UBYTE *p = addr + (ULONG)i * v_nxpl;
+                for (row = rows; row--;) {
+                    memset(p, plane_byte[i], fill_len);
+                    p += v_lin_wr;
+                }
+            }
+        }
+#else
+        /* Interleaved planes: optimized for handling 2 planes at once */
         ULONG pair_planes[4];        /* bits on screen for 8 planes max */
         UWORD i;
 
@@ -659,6 +708,7 @@ void blank_out(int topx, int topy, int botx, int boty)
             }
             addr += offs;       /* skip non-region area with stride advance */
         }
+#endif
     }
     else {
         /* Monochrome mode */
@@ -716,8 +766,11 @@ void scroll_up(UWORD top_line)
     /* form # of bytes to move */
     count = (ULONG)v_cel_wr * (v_cel_my - top_line);
 
-    /* move BYTEs of memory*/
+#ifdef MACHINE_AMIGA
+    scroll_up_planes(dst, src, count);
+#else
     memmove(dst, src, count);
+#endif
 
     /* exit thru blank out, bottom line cell address y to top/left cell */
     blank_out(0, v_cel_my , v_cel_mx, v_cel_my);
@@ -743,8 +796,11 @@ void scroll_down(UWORD start_line)
     /* form # of bytes to move */
     count = (ULONG)v_cel_wr * (v_cel_my - start_line);
 
-    /* move BYTEs of memory*/
+#ifdef MACHINE_AMIGA
+    scroll_down_planes(dst, src, count);
+#else
     memmove(dst, src, count);
+#endif
 
     /* exit thru blank out */
     blank_out(0, start_line , v_cel_mx, start_line);

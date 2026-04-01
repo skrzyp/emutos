@@ -300,6 +300,15 @@ void vdi_vr_trnfm(Vwk * vwk)
     size = (LONG)src_mfdb->fd_h * src_mfdb->fd_wdwidth; /* size of plane in words */
     inplace = (src==dst);
 
+#ifdef MACHINE_AMIGA
+    /* On Amiga, device format is contiguous (same as standard format).
+     * No transformation is needed; just copy if not in-place. */
+    if (!inplace)
+        memcpy(dst, src, (LONG)planes * size * sizeof(WORD));
+    dst_mfdb->fd_stand = src_mfdb->fd_stand ? 0 : 1;
+    return;
+#endif
+
     if (src_mfdb->fd_stand)     /* source is standard format */
     {
         dst_mfdb->fd_stand = 0;     /* force dest to device-dependent */
@@ -900,6 +909,24 @@ dont_clip (struct blit_frame * info)
 }
 
 /*
+ * Derive blit layout parameters from an off-screen MFDB.
+ * On Atari, device-dependent MFDBs use interleaved plane layout;
+ * on Amiga, they use contiguous planes (identical to standard format).
+ */
+static void mfdb_to_blit(const MFDB *mfdb, WORD *nxwd, WORD *nxln, LONG *nxpl)
+{
+#ifdef MACHINE_AMIGA
+    *nxwd = 2;
+    *nxln = mfdb->fd_wdwidth * 2;
+    *nxpl = (LONG)mfdb->fd_wdwidth * mfdb->fd_h * 2;
+#else
+    *nxwd = mfdb->fd_nplanes * 2;
+    *nxln = mfdb->fd_wdwidth * (*nxwd);
+    *nxpl = 2;   /* interleaved: planes are 1 word apart */
+#endif
+}
+
+/*
  * setup_info - fill the info structure with MFDB values
  *
  * returns TRUE iff there is nothing to do (everything is clipped away,
@@ -917,25 +944,22 @@ setup_info (struct raster_t *raster, struct blit_frame * info)
 
     /* setup plane info for source MFDB */
     if ( src->fd_addr ) {
-        /* for a positive source address */
         info->s_form = src->fd_addr;
-        info->s_nxwd = src->fd_nplanes * 2;
-        info->s_nxln = src->fd_wdwidth * info->s_nxwd;
+        mfdb_to_blit(src, &info->s_nxwd, &info->s_nxln, &info->s_nxpl);
     }
     else {
         /* source form is screen */
         info->s_form = (UWORD*) v_bas_ad;
         info->s_nxwd = v_nxwd;
         info->s_nxln = v_lin_wr;
+        info->s_nxpl = v_nxpl;
     }
 
     /* setup plane info for destination MFDB */
     if ( dst->fd_addr ) {
-        /* for a positive address */
         info->d_form = dst->fd_addr;
         info->plane_ct = dst->fd_nplanes;
-        info->d_nxwd = dst->fd_nplanes * 2;
-        info->d_nxln = dst->fd_wdwidth * info->d_nxwd;
+        mfdb_to_blit(dst, &info->d_nxwd, &info->d_nxln, &info->d_nxpl);
     }
     else {
         /* destination form is screen */
@@ -943,6 +967,7 @@ setup_info (struct raster_t *raster, struct blit_frame * info)
         info->plane_ct = v_planes;
         info->d_nxwd = v_nxwd;
         info->d_nxln = v_lin_wr;
+        info->d_nxpl = v_nxpl;
 
         /* check if clipping is enabled, when destination is screen */
         if (raster->clip)
@@ -955,9 +980,6 @@ setup_info (struct raster_t *raster, struct blit_frame * info)
     }
     else
         dont_clip(info);
-
-    info->s_nxpl = v_nxpl;      /* next plane offset (source) */
-    info->d_nxpl = v_nxpl;      /* next plane offset (destination) */
 
 #if CONF_WITH_VDI_16BIT
     return (info->plane_ct <= 16) ? FALSE : TRUE;
@@ -1331,6 +1353,9 @@ static void
 cpy_raster(struct raster_t *raster, struct blit_frame *info)
 {
     WORD mode;
+#ifdef MACHINE_AMIGA
+    MFDB *cpy_src_mfdb = *(MFDB **)&CONTRL[7];
+#endif
     WORD fg_col, bg_col;
 
     arb_corner((Rect*)PTSIN);
@@ -1357,8 +1382,17 @@ cpy_raster(struct raster_t *raster, struct blit_frame *info)
         /* COPY RASTER OPAQUE */
 
         /* planes of source and destination equal in number? */
+#ifdef MACHINE_AMIGA
+        /* On Amiga nxwd is always 2, so compare plane counts directly */
+        {
+            WORD src_planes = cpy_src_mfdb->fd_addr ? cpy_src_mfdb->fd_nplanes : v_planes;
+            if (src_planes != info->plane_ct)
+                return;
+        }
+#else
         if (info->s_nxwd != info->d_nxwd)
             return;
+#endif
 
         info->op_tab[0] = mode; /* fg:0 bg:0 */
         info->bg_col = 0;       /* bg:0 & fg:0 => only first OP_TAB */
@@ -1381,8 +1415,22 @@ cpy_raster(struct raster_t *raster, struct blit_frame *info)
          */
 
         /* is source area one plane? */
+#ifdef MACHINE_AMIGA
+        /* On Amiga, s_nxwd is always 2 (contiguous) regardless of plane
+         * count, so check the source MFDB/screen plane count directly. */
+        {
+            if (cpy_src_mfdb->fd_addr) {
+                if (cpy_src_mfdb->fd_nplanes != 1)
+                    return;     /* MFDB source must be mono */
+            } else {
+                if (v_planes != 1)
+                    return;     /* screen source must be mono */
+            }
+        }
+#else
         if (info->s_nxwd != 2)
             return;             /* source must be mono plane */
+#endif
 
         info->s_nxpl = 0;       /* use only one plane of source */
 
