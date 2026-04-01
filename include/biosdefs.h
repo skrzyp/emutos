@@ -156,6 +156,12 @@ typedef void (*ETV_TIMER_T)(int ms); /* Type of BDOS Event Timer */
 #define VIDEL_4BPP          2               /* 16 colours */
 #define VIDEL_8BPP          3               /* 256 colours */
 #define VIDEL_TRUECOLOR     4               /* 65536 colours */
+/* Values 5-6 extend the Falcon encoding for Amiga bitplane modes.
+ * These are not part of the original Falcon VsetMode() specification
+ * (which uses values 0-4) and are only valid on MACHINE_AMIGA.
+ * Ordered by increasing plane count (3 < 5) for consistency. */
+#define VIDEL_3BPP          5               /* 8 colours (Amiga 3-plane) */
+#define VIDEL_5BPP          6               /* 32 colours (Amiga 5-plane) */
 
 /* IDT cookie flag for 24 hour: 0 = 12am/pm or 1 = 24 hour */
 #define IDT_12H   0x0000

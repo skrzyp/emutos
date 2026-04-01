@@ -118,6 +118,7 @@ WORD get_videl_mode(void);
 #ifdef MACHINE_AMIGA
 extern int amiga_is_ntsc;
 WORD amiga_vgetmode(void);
+ULONG amiga_vram_for_mode(WORD videlmode);
 #endif
 
 #endif /* BIOSEXT_H */

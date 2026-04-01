@@ -15,7 +15,12 @@
 
 #ifdef MACHINE_AMIGA
 
-#define MAX_AMIGA_PLANES 4  /* max supported bitplanes (OCS: up to 6 for EHB/HAM) */
+#define MAX_AMIGA_PLANES 8  /* max bitplanes in Copper list (AGA: 8, OCS/ECS lores: 6) */
+
+/* Amiga chipset types */
+#define CHIPSET_OCS     0       /* Original Chip Set (A500, A2000) */
+#define CHIPSET_ECS     1       /* Enhanced Chip Set (A500+, A600, A3000) */
+#define CHIPSET_AGA     2       /* Advanced Graphics Architecture (A1200, A4000) */
 
 struct IDE
 {
@@ -52,8 +57,9 @@ extern UWORD amiga_screen_planes;
 extern const UBYTE *amiga_screenbase;
 extern UWORD *copper_list;
 extern UWORD *amiga_sprite_ptr;     /* current sprite DMA pointer (data or null) */
-extern UWORD amiga_palette_shadow[16];
+extern UWORD amiga_palette_shadow[32];
 extern int has_gayle;
+extern UBYTE amiga_chipset;     /* CHIPSET_OCS / CHIPSET_ECS / CHIPSET_AGA */
 
 void amiga_machine_detect(void);
 const char *amiga_machine_name(void);
@@ -62,6 +68,7 @@ void amiga_autoconfig(void);
 void amiga_add_alt_ram(void);
 ULONG amiga_detect_ram(void *start, void *end, ULONG step);
 #endif
+UWORD amiga_max_planes(UWORD width);
 ULONG amiga_initial_vram_size(void);
 void amiga_screen_init(void);
 WORD amiga_check_moderez(WORD moderez);
@@ -70,6 +77,8 @@ void amiga_setphys(const UBYTE *addr);
 const UBYTE *amiga_physbase(void);
 WORD amiga_setcolor(WORD colorNum, WORD color);
 void amiga_setrez(WORD rez, WORD videlmode);
+WORD amiga_vsetmode(WORD mode);
+LONG amiga_vgetsize(WORD mode);
 void amiga_kbd_init(void);
 void amiga_ikbd_writeb(UBYTE b);
 void amiga_extra_vbl(void);

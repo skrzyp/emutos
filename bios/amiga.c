@@ -52,6 +52,7 @@
 #define SERDAT  *(volatile UWORD*)0xdff030
 #define SERPER  *(volatile UWORD*)0xdff032
 #define POTGO   *(volatile UWORD*)0xdff034
+#define DENISEID *(volatile UWORD*)0xdff07c
 #define DSKSYNC *(volatile UWORD*)0xdff07e
 #define COP1LCH *(UWORD* volatile*)0xdff080
 #define COPJMP1 *(volatile UWORD*)0xdff088
@@ -233,6 +234,7 @@ static BOOL is_custom_chips_mirror(void *mirror_base)
 }
 
 int has_gayle;
+UBYTE amiga_chipset;    /* CHIPSET_OCS / CHIPSET_ECS / CHIPSET_AGA */
 
 /* Detect A600 / A1200 Gayle chip.
  * Freely inspired by AROS ReadGayle().
@@ -322,8 +324,56 @@ static void detect_ntsc(void)
     }
 }
 
+/*
+ * Detect Amiga chipset generation (OCS / ECS / AGA).
+ *
+ * VPOSR bits 14-8 identify the Agnus chip:
+ *   0x00 = OCS (8361/8367), 0x20-0x21 = ECS (8372/8375),
+ *   0x22-0x23 = Alice (A3000/A4000).
+ *
+ * DENISEID ($DFF07C) identifies the Denise chip:
+ *   OCS Denise has no ID register (reads return garbage),
+ *   ECS Denise (8373) returns 0x00FC,
+ *   AGA Lisa returns 0x00F8.
+ *
+ * The chipset level is the minimum of Agnus and Denise generations,
+ * since both must be present for a given feature set to work.
+ */
+static void detect_chipset(void)
+{
+    UBYTE agnus_type;
+    UBYTE denise_type;
+    UWORD id1, id2;
+
+    /* Agnus generation from VPOSR bits 14-8 */
+    agnus_type = (VPOSR >> 8) & 0x7F;
+    if (agnus_type >= 0x22)
+        agnus_type = CHIPSET_AGA;
+    else if (agnus_type >= 0x20)
+        agnus_type = CHIPSET_ECS;
+    else
+        agnus_type = CHIPSET_OCS;
+
+    /* Denise generation from DENISEID.
+     * OCS Denise has no ID register -- reads return unstable values.
+     * Read twice: if the values differ, it's OCS. */
+    id1 = DENISEID;
+    id2 = DENISEID;
+    if (id1 != id2)
+        denise_type = CHIPSET_OCS;
+    else if ((id1 & 0x00FF) == 0x00F8)
+        denise_type = CHIPSET_AGA;
+    else
+        denise_type = CHIPSET_ECS;  /* 0x00FC or other stable ECS ID */
+
+    /* Use the lesser of the two: mixed boards are limited by the weaker chip */
+    amiga_chipset = (agnus_type < denise_type) ? agnus_type : denise_type;
+}
+
 void amiga_machine_detect(void)
 {
+    detect_chipset();
+    KDEBUG(("amiga_chipset = %d (0=OCS, 1=ECS, 2=AGA)\n", amiga_chipset));
     detect_gayle();
     KDEBUG(("has_gayle = %d\n", has_gayle));
     detect_ntsc();
@@ -594,17 +644,31 @@ static UWORD sprite_hstart_off;    /* display window horizontal offset */
 static UWORD sprite_vstart_off;    /* display window vertical offset */
 static BOOL sprite_hires;          /* TRUE if 640-pixel mode */
 
-/* Shadow palette for amiga_setcolor() to return previous values */
-UWORD amiga_palette_shadow[16];
+/* Shadow palette for amiga_setcolor() to return previous values.
+ * OCS/ECS have 32 color registers (COLOR00-COLOR31). */
+UWORD amiga_palette_shadow[32];
+
+/*
+ * Return the maximum number of bitplanes for the given pixel width.
+ *
+ * OCS/ECS:  lowres (320px) up to 6, hires (640px) up to 4.
+ * AGA:      up to 8 in all modes (wider DMA fetch via FMODE).
+ *
+ * Note: 6 bitplanes on OCS/ECS means EHB or HAM, which EmuTOS does not
+ * use.  Normal modes are limited to 5 planes (32 colours).
+ */
+UWORD amiga_max_planes(UWORD width)
+{
+    if (amiga_chipset >= CHIPSET_AGA)
+        return 8;
+    return (width >= 640) ? 4 : 5;
+}
 
 ULONG amiga_initial_vram_size(void)
 {
-    /* Must be large enough for the biggest supported mode.
-     * 640x400x1 = 32000, 640x200x2 = 32000, 320x200x4 = 32000.
-     * PAL: 320x256x4 = 40960, 640x256x2 = 40960.
-     * Use 64KB for margin. Note: PAL colour interlace modes
-     * (e.g. 320x512x4 = 81920) would need a larger allocation. */
-    return 64UL * 1024;
+    /* Allocate only enough for the boot mode (320x200x4 = 32000 bytes).
+     * Srealloc() will grow the buffer dynamically on mode changes. */
+    return 320UL / 8 * 200 * 4;
 }
 
 /*
@@ -664,15 +728,24 @@ static void amiga_rebuild_copper_list(void)
     COPJMP1 = 0;
 }
 
-/* Default 16-color ST palette in Amiga OCS 12-bit RGB format */
-static const UWORD amiga_dflt_palette[16] = {
+/* Default 32-color palette in Amiga OCS 12-bit RGB format.
+ * Colours 0-15: ST default palette (white bg, primary colours, black fg).
+ * Colours 16-31: half-brightness variants (as in EHB, but independently
+ * settable on 5-plane modes with full 32-register palette). */
+static const UWORD amiga_dflt_palette[32] = {
     0x0fff, 0x0f00, 0x00f0, 0x0ff0,
     0x000f, 0x0f0f, 0x00ff, 0x0555,
     0x0333, 0x0f33, 0x03f3, 0x0ff3,
-    0x033f, 0x0f3f, 0x03ff, 0x0000
+    0x033f, 0x0f3f, 0x03ff, 0x0000,
+    /* 16-31: half-brightness of 0-15 */
+    0x0888, 0x0800, 0x0080, 0x0880,
+    0x0008, 0x0808, 0x0088, 0x0333,
+    0x0222, 0x0822, 0x0282, 0x0882,
+    0x0228, 0x0828, 0x0288, 0x0000
 };
 
-static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
+static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes,
+                                BOOL interlace)
 {
     UWORD lowres_height = height;
     UWORD bplcon0;
@@ -691,10 +764,12 @@ static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
     ULONG vram_needed = (ULONG)(width / 8) * height * planes;
     WORD old_sr;
 
-    if (vram_needed > amiga_initial_vram_size())
+    /* video_ram_size is 0 during early boot (before screen_init_address),
+     * so skip this check until it's initialized by Srealloc setup. */
+    if (video_ram_size > 0 && vram_needed > (ULONG)video_ram_size)
     {
-        KDEBUG(("amiga_set_videomode: %ux%ux%u needs %lu bytes, only %lu available\n",
-                width, height, planes, vram_needed, amiga_initial_vram_size()));
+        KDEBUG(("amiga_set_videomode: %ux%ux%u needs %lu bytes, only %ld available\n",
+                width, height, planes, vram_needed, video_ram_size));
         return;
     }
 
@@ -715,7 +790,7 @@ static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
         ddfstop = 0x00d4;
     }
 
-    if (height >= 400)
+    if (interlace)
     {
         bplcon0 |= 0x0004; /* LACE */
         bpl1mod = amiga_screen_width_in_bytes;
@@ -752,19 +827,19 @@ static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
     DIWSTRT = diwstrt; /* Set display window start */
     DIWSTOP = diwstop; /* Set display window stop */
 
-    /* Build the palette shadow: default ST colours + fixup + clear stale.
+    /* Build the palette shadow: default colours + fixup + clear stale.
      * Fixup: register 1 must be black in mono, register 3 in ST-Medium
      * (matches fixup_ste_palette on Atari -- foreground text colour). */
     ncolors = 1 << planes;
-    for (i = 0; i < 16; i++)
+    for (i = 0; i < 32; i++)
         amiga_palette_shadow[i] = (i < (int)ncolors) ? amiga_dflt_palette[i] : 0;
     if (planes == 1)
         amiga_palette_shadow[1] = amiga_dflt_palette[15]; /* black */
     else if (planes == 2)
         amiga_palette_shadow[3] = amiga_dflt_palette[15]; /* black */
 
-    /* Write all 16 registers so stale values are cleared on mode downgrade */
-    for (i = 0; i < 16; i++)
+    /* Write all 32 registers so stale values are cleared on mode downgrade */
+    for (i = 0; i < 32; i++)
         COLOR_REGS[i] = amiga_palette_shadow[i];
 
     if (width == 320 && height == 200 && planes == 4)
@@ -787,9 +862,14 @@ static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
     set_sr(old_sr);             /* restore interrupts */
 }
 
+static BOOL decode_videlmode(WORD videlmode, UWORD *width, UWORD *height,
+                             UWORD *planes, BOOL *interlace);
+
 WORD amiga_check_moderez(WORD moderez)
 {
-    WORD current_mode, return_mode;
+    WORD current_mode;
+    UWORD width, height, planes;
+    BOOL interlace;
 
     if (moderez == 0xff00) /* ST Low: 320x200 16c */
         moderez = VIDEL_COMPAT|VIDEL_4BPP;
@@ -801,9 +881,15 @@ WORD amiga_check_moderez(WORD moderez)
     if (moderez < 0)                /* ignore other ST video modes */
         return 0;
 
+    if (!decode_videlmode(moderez, &width, &height, &planes, &interlace))
+        return 0;
+
+    /* validate plane count vs DMA bandwidth */
+    if (planes > amiga_max_planes(width))
+        return 0;
+
     current_mode = amiga_vgetmode();
-    return_mode = moderez;          /* assume always valid */
-    return (return_mode==current_mode)?0:return_mode;
+    return (moderez==current_mode)?0:moderez;
 }
 
 void amiga_get_current_mode_info(UWORD *planes, UWORD *hz_rez, UWORD *vt_rez)
@@ -826,7 +912,7 @@ void amiga_screen_init(void)
     memset(sprite0_null, 0, sizeof(UWORD) * 4);
     amiga_sprite_ptr = sprite0_null;    /* cursor starts hidden */
 
-    amiga_set_videomode(320, 200, 4);   /* boot into ST-Low (16 colours) */
+    amiga_set_videomode(320, 200, 4, FALSE);  /* boot into ST-Low (16 colours) */
 
     /* Enable VBL interrupt */
     VEC_LEVEL3 = amiga_vbl;
@@ -853,7 +939,7 @@ WORD amiga_setcolor(WORD colorNum, WORD color)
 
     KDEBUG(("amiga_setcolor(%d, 0x%04x)\n", colorNum, color));
 
-    colorNum &= 0x0f;
+    colorNum &= 0x1f;  /* OCS/ECS: 32 color registers */
     old = amiga_palette_shadow[colorNum];
 
     if (color >= 0)
@@ -914,10 +1000,8 @@ void amiga_set_sprite_shape(WORD xhot, WORD yhot,
     dst[0] = 0;                 /* terminator */
     dst[1] = 0;
 
-    /* Update sprite palette */
-    COLOR_REGS[17] = amiga_palette_shadow[bg_col & 0x0f];
-    COLOR_REGS[18] = amiga_palette_shadow[fg_col & 0x0f];
-    COLOR_REGS[19] = amiga_palette_shadow[fg_col & 0x0f];
+    /* Update sprite palette (m_cdb_bg/fg are set by caller before us) */
+    amiga_update_sprite_colors();
 }
 
 /*
@@ -972,28 +1056,68 @@ void amiga_hide_sprite(void)
     amiga_sprite_ptr = sprite0_null;
 }
 
+/*
+ * Decode a VIDEL mode word into width, height, planes, and interlace flag.
+ * Returns FALSE if the mode has an unsupported depth.
+ */
+static BOOL decode_videlmode(WORD videlmode, UWORD *width, UWORD *height,
+                             UWORD *planes, BOOL *interlace)
+{
+    switch (videlmode & VIDEL_BPPMASK)
+    {
+    case VIDEL_1BPP: *planes = 1; break;
+    case VIDEL_2BPP: *planes = 2; break;
+    case VIDEL_3BPP: *planes = 3; break;
+    case VIDEL_4BPP: *planes = 4; break;
+    case VIDEL_5BPP: *planes = 5; break;
+    default: return FALSE;
+    }
+
+    *width = (videlmode & VIDEL_80COL) ? 640 : 320;
+
+    if (videlmode & VIDEL_VGA)
+        *height = (videlmode & VIDEL_VERTICAL) ? 240 : 480;
+    else if (videlmode & VIDEL_PAL)
+        *height = (videlmode & VIDEL_VERTICAL) ? 512 : 256;
+    else
+        *height = (videlmode & VIDEL_VERTICAL) ? 400 : 200;
+
+    /* AGA supports progressive scan (scan-doubled "No Flicker" modes),
+     * so interlace follows the VIDEL flags: VGA = progressive, else
+     * VIDEL_VERTICAL means interlace.
+     * OCS/ECS have no scan doubler: any height beyond a single field
+     * (>200 NTSC, >256 PAL) physically requires interlace. */
+    if (amiga_chipset >= CHIPSET_AGA)
+        *interlace = !(videlmode & VIDEL_VGA) && (videlmode & VIDEL_VERTICAL);
+    else
+        *interlace = (*height >= 400);
+
+    return TRUE;
+}
+
+ULONG amiga_vram_for_mode(WORD videlmode)
+{
+    UWORD width, height, planes;
+    BOOL interlace;
+
+    if (!decode_videlmode(videlmode, &width, &height, &planes, &interlace))
+        return 0;
+
+    return (ULONG)(width / 8) * height * planes;
+}
+
 void amiga_setrez(WORD rez, WORD videlmode)
 {
     UWORD width, height, planes;
+    BOOL interlace;
 
-    switch (videlmode & VIDEL_BPPMASK)
-    {
-    case VIDEL_1BPP: planes = 1; break;
-    case VIDEL_2BPP: planes = 2; break;
-    case VIDEL_4BPP: planes = 4; break;
-    default: return; /* unsupported depth */
-    }
+    if (!decode_videlmode(videlmode, &width, &height, &planes, &interlace))
+        return;
 
-    width = (videlmode & VIDEL_80COL) ? 640 : 320;
+    if (planes > amiga_max_planes(width))
+        return;
 
-    if (videlmode & VIDEL_VGA)
-        height = (videlmode & VIDEL_VERTICAL) ? 240 : 480;
-    else if (videlmode & VIDEL_PAL)
-        height = (videlmode & VIDEL_VERTICAL) ? 512 : 256;
-    else
-        height = (videlmode & VIDEL_VERTICAL) ? 400 : 200;
-
-    amiga_set_videomode(width, height, planes);
+    amiga_set_videomode(width, height, planes, interlace);
 }
 
 WORD amiga_vgetmode(void)
@@ -1003,23 +1127,32 @@ WORD amiga_vgetmode(void)
     switch (amiga_screen_planes)
     {
     case 2:  mode = VIDEL_2BPP; break;
+    case 3:  mode = VIDEL_3BPP; break;
     case 4:  mode = VIDEL_4BPP; break;
+    case 5:  mode = VIDEL_5BPP; break;
     default: mode = VIDEL_1BPP; break;
     }
 
     if (amiga_screen_width >= 640)
         mode |= VIDEL_80COL;
 
-    if (amiga_screen_height == 240)
-        mode |= VIDEL_VGA | VIDEL_VERTICAL;
-    else if (amiga_screen_height == 480)
-        mode |= VIDEL_VGA;
-    else if (amiga_screen_height == 512)
-        mode |= VIDEL_PAL | VIDEL_VERTICAL;
-    else if (amiga_screen_height == 256)
-        mode |= VIDEL_PAL;
-    else if (amiga_screen_height == 400)
+    if (amiga_interlace_offset)
+    {
+        /* Interlaced TV mode: VIDEL_VERTICAL set */
         mode |= VIDEL_VERTICAL;
+        if (amiga_screen_height == 512)
+            mode |= VIDEL_PAL;
+    }
+    else
+    {
+        /* Non-interlaced: check if VGA (>256 lines) or PAL */
+        if (amiga_screen_height == 480 || amiga_screen_height == 240)
+            mode |= VIDEL_VGA;
+        else if (amiga_screen_height == 256)
+            mode |= VIDEL_PAL;
+        if (amiga_screen_height == 240)
+            mode |= VIDEL_VERTICAL;  /* VGA + VERTICAL = fewer lines */
+    }
 
     /* VIDEL_COMPAT mirrors the sshiftmod value set by amiga_set_videomode():
      * ST_LOW (320x200 16c), ST_MEDIUM (640x200 4c), ST_HIGH (640x400 mono) */
@@ -1027,6 +1160,27 @@ WORD amiga_vgetmode(void)
         mode |= VIDEL_COMPAT;
 
     return mode;
+}
+
+/*
+ * XBIOS-compatible VsetMode / VgetSize for Amiga.
+ * Allows Falcon-compatible programs to query the current video mode
+ * and compute VRAM requirements via standard XBIOS calls.
+ */
+WORD amiga_vsetmode(WORD mode)
+{
+    if (mode == -1)
+        return amiga_vgetmode();
+
+    /* Mode setting via VsetMode is not supported on Amiga.
+     * Use Setscreen(0L, 0L, FALCON_REZ, mode) instead. */
+    KDEBUG(("amiga_vsetmode(%d): mode setting not supported, use Setscreen()\n", mode));
+    return amiga_vgetmode();
+}
+
+LONG amiga_vgetsize(WORD mode)
+{
+    return (LONG)amiga_vram_for_mode(mode);
 }
 
 /******************************************************************************/
