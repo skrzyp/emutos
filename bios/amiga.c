@@ -573,6 +573,7 @@ void amiga_add_alt_ram(void)
 UWORD amiga_screen_width;
 UWORD amiga_screen_width_in_bytes;
 UWORD amiga_screen_height;
+ULONG amiga_interlace_offset;       /* 0 or width_in_bytes; used by VBL handler */
 UWORD amiga_screen_planes;
 const UBYTE *amiga_screenbase;
 UWORD *copper_list;
@@ -692,7 +693,12 @@ static void amiga_set_videomode(UWORD width, UWORD height, UWORD planes)
     {
         bplcon0 |= 0x0004; /* LACE */
         bpl1mod = amiga_screen_width_in_bytes;
+        amiga_interlace_offset = amiga_screen_width_in_bytes;
         lowres_height = height / 2;
+    }
+    else
+    {
+        amiga_interlace_offset = 0;
     }
 
     vstart = 44 + ((amiga_is_ntsc?200:256) / 2) - (lowres_height / 2);

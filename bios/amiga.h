@@ -47,6 +47,7 @@ extern const UBYTE scancode_atari_from_amiga[128];
 extern UWORD amiga_screen_width;
 extern UWORD amiga_screen_width_in_bytes;
 extern UWORD amiga_screen_height;
+extern ULONG amiga_interlace_offset;
 extern UWORD amiga_screen_planes;
 extern const UBYTE *amiga_screenbase;
 extern UWORD *copper_list;

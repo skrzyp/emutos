@@ -248,10 +248,16 @@ amiga_int_5_end:
 /******************************************************************************/
 
         .extern _copper_list
+        .extern _amiga_screen_planes
+
+// VBL handler: patches the Copper list BPLxPT registers every frame
+// for interlace field switching and screen base address changes.
+// Must complete before the Copper WAIT at line 10 (~2270 cycles budget
+// at 7.09 MHz PAL).  The setbpl loop uses ~58 cycles/plane = ~232 for 4.
 
         .globl  _amiga_vbl
 _amiga_vbl:
-        movem.l d0-d1/a0-a1,-(sp)
+        movem.l d0-d2/a0-a1,-(sp)
 
         move.w  0xdff01e,d0             // INTREQR
         btst    #5,d0                   // VBL interrupt?
@@ -260,17 +266,33 @@ _amiga_vbl:
         move.l  _amiga_screenbase,d0    // Video Base address
 
         tst.w   0xdff004                // VPOSR: Test bit 15 = LOF bit
-        jmi     setcopper               // LOF = 1, odd field: start at line 1
+        jmi     setcopper               // LOF = 1, odd field: start at line 0
 
-        moveq   #0,d1
-        move.w  _amiga_screen_width_in_bytes,d1
-        add.l   d1,d0                   // LOF = 0, even field: start at line 2
+        .extern _amiga_interlace_offset
+        add.l   _amiga_interlace_offset,d0 // LOF = 0, even field: add one-line
+                                        // offset (0 in non-interlace modes)
 
 setcopper:
+        // d0 = base address for plane 0 (adjusted for interlace)
+        // v_nxpl = bytes between planes (0 for mono, plane_size otherwise).
+        // In mono the loop runs once so d1 is never actually added.
+        .extern _v_nxpl
+        move.l  _v_nxpl,d1             // plane stride (ULONG)
+
         move.l  _copper_list,a0
-        move.w  d0,10(a0)               // BPL1PTL
+        lea     4(a0),a0                // skip WAIT instruction (2 words)
+
+        // Patch BPLxPTH/BPLxPTL for each plane
+        move.w  _amiga_screen_planes,d2
+        subq.w  #1,d2                   // for dbra
+setbpl:
+        move.w  d0,6(a0)               // BPLxPTL (low word)
         swap    d0
-        move.w  d0,6(a0)                // BPL1PTH
+        move.w  d0,2(a0)               // BPLxPTH (high word)
+        swap    d0
+        add.l   d1,d0                  // advance to next plane
+        lea     8(a0),a0               // next BPLxPTH/PTL pair (4 words = 8 bytes)
+        dbra    d2,setbpl
 
         jbsr    _int_vbl                // Call the standard VBL handler
 
@@ -281,7 +303,7 @@ setcopper:
         move.w  #0x0020,0xdff09c        // Twice for compatibility
 
 amivblend:
-        movem.l (sp)+,d0-d1/a0-a1
+        movem.l (sp)+,d0-d2/a0-a1
         rte
 
 #endif /* MACHINE_AMIGA */
