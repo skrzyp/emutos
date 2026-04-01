@@ -38,6 +38,7 @@
 #include "asm.h"
 #include "vectors.h"
 #include "xbios.h"
+#include "amiga.h"
 
 #define DBG_XBIOS        0
 
@@ -1274,7 +1275,7 @@ LONG supexec(PFLONG);       /* defined in vectors.S */
 # define LAST_ENTRY 0x8d
 #elif CONF_WITH_DSP
 # define LAST_ENTRY 0x7f
-#elif CONF_WITH_VIDEL
+#elif CONF_WITH_VIDEL || defined(MACHINE_AMIGA)
 # define LAST_ENTRY 0x5f
 #elif CONF_WITH_TT_SHIFTER
 # define LAST_ENTRY 0x57
@@ -1417,6 +1418,15 @@ const PFLONG xbios_vecs[] = {
     VEC(xbios_5d, vsetrgb),   /* 5d */
     VEC(xbios_5e, vgetrgb),   /* 5e */
     VEC(xbios_5f, vfixmode),  /* 5f */
+#elif defined(MACHINE_AMIGA)
+    (PFLONG) amiga_vsetmode,  /* 58 VsetMode  */
+    xbios_unimpl,             /* 59 VgetMonitor */
+    xbios_unimpl,             /* 5a Vsetsync */
+    (PFLONG) amiga_vgetsize,  /* 5b VgetSize */
+    xbios_unimpl,             /* 5c */
+    xbios_unimpl,             /* 5d VsetRGB */
+    xbios_unimpl,             /* 5e VgetRGB */
+    xbios_unimpl,             /* 5f Vfixmode */
 #elif LAST_ENTRY > 0x5f     /* must insert fillers for videl opcodes */
     xbios_unimpl,   /* 58 */
     xbios_unimpl,   /* 59 */
