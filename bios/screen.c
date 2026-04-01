@@ -1145,6 +1145,24 @@ WORD setscreen(UBYTE *logLoc, const UBYTE *physLoc, WORD rez, WORD videlmode)
     }
 #endif
 
+#ifdef MACHINE_AMIGA
+    /*
+     * Amiga: reallocate screen memory via Srealloc() when the caller
+     * passes logLoc=0/physLoc=0 (same convention as Falcon).
+     * This lets us boot with a small buffer and grow on demand.
+     */
+    if (rez == FALCON_REZ && videlmode != -1 && !logLoc && !physLoc) {
+        ULONG need = amiga_vram_for_mode(videlmode);
+        if (need > 0) {
+            UBYTE *addr = (UBYTE *)Srealloc(need);
+            if (!addr || (LONG)addr < 0)    /* NULL or error code */
+                return -1;
+            v_bas_ad = addr;
+            setphys(addr);
+        }
+    }
+#endif
+
     /* Wait for the end of display to avoid the plane-shift bug on ST */
     vsync();
 
