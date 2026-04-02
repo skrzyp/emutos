@@ -131,8 +131,8 @@ struct IDE
 #endif /* MACHINE_M548X */
 
 /* the data register is naturally byteswapped on some hardware */
-#if defined(MACHINE_AMIGA)
-#define IDE_DATA_REGISTER_IS_BYTESWAPPED TRUE
+#ifdef MACHINE_AMIGA
+#define IDE_DATA_REGISTER_IS_BYTESWAPPED TRUE  /* Gayle swaps bytes in 16-bit data register */
 #else
 #define IDE_DATA_REGISTER_IS_BYTESWAPPED FALSE
 #endif
@@ -611,6 +611,7 @@ void ide_init(void)
 
     if (!has_ide)
         return;
+
 
 #if CONF_ATARI_HARDWARE && !defined(MACHINE_FIREBEE)
     /* Reject 'ghost' interfaces & detect twisted cables.

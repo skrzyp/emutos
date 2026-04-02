@@ -22,28 +22,37 @@
 #define CHIPSET_ECS     1       /* Enhanced Chip Set (A500+, A600, A3000) */
 #define CHIPSET_AGA     2       /* Advanced Graphics Architecture (A1200, A4000) */
 
+/*
+ * Amiga Gayle IDE register layout (A600/A1200).
+ * Base address: 0xDA0000.  Task file registers are spaced 4 bytes apart.
+ * Control/alternate status is at CS1 offset 0x1018.
+ *
+ * The 16-bit data register is at offset 0x0000 (directly word-accessible).
+ * 8-bit task file registers are at ODD byte addresses within each 4-byte
+ * slot (offset+1), because the 68000 accesses D0-D7 (low byte) at odd
+ * addresses, and Gayle routes IDE D0-D7 to the 68000 low byte lane.
+ *
+ * Verified against: Linux gayle.c, WinUAE gayle.cpp, Minimig Gayle.v.
+ */
 struct IDE
 {
-    UBYTE filler00[4];
-    UBYTE features; /* Read: error */
+    UWORD data;                          /* 0x0000 - 16-bit data register */
+    UBYTE filler02[3];
+    UBYTE features;                      /* 0x0005 - Read: error */
     UBYTE filler06[3];
-    UBYTE sector_count;
+    UBYTE sector_count;                  /* 0x0009 */
     UBYTE filler0a[3];
-    UBYTE sector_number;
+    UBYTE sector_number;                 /* 0x000D */
     UBYTE filler0e[3];
-    UBYTE cylinder_low;
+    UBYTE cylinder_low;                  /* 0x0011 */
     UBYTE filler12[3];
-    UBYTE cylinder_high;
+    UBYTE cylinder_high;                 /* 0x0015 */
     UBYTE filler16[3];
-    UBYTE head;
+    UBYTE head;                          /* 0x0019 */
     UBYTE filler1a[3];
-    UBYTE command; /* Read: status */
-    UBYTE filler1e[4091];
-    UBYTE control; /* Read: Alternate status */
-    UBYTE filler1019[3];
-    UBYTE address; /* Write: Not used */
-    UBYTE filler02[4067];
-    UWORD data;
+    UBYTE command;                       /* 0x001D - Read: status */
+    UBYTE filler1e[0x1019 - 0x001E];    /* gap to control register */
+    UBYTE control;                       /* 0x1019 - Read: alternate status */
 };
 
 #define ide_interface ((volatile struct IDE*)0x00da0000)
