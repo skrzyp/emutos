@@ -2635,9 +2635,7 @@ void amiga_rs232_init(void)
     VEC_LEVEL5 = amiga_int_5;
     INTENA = SETBITS | RBF; /* Enable RBF interrupt */
 #elif AMIGA_SERIAL_DEBUG_PRINT
-    /* Debug-only: initialize serial port for kprintf output.
-     * 9600 baud 8N1 — emulators ignore baud rate for TCP serial. */
-    SERPER = SERPER_8BIT | SERPER_BAUD(9600);
+    /* Already initialized lazily by amiga_rs232_writeb(). */
 #endif
 }
 
@@ -2648,12 +2646,34 @@ BOOL amiga_rs232_can_write(void)
 
 void amiga_rs232_writeb(UBYTE b)
 {
-    while (!amiga_rs232_can_write())
+#if AMIGA_SERIAL_DEBUG_PRINT
+    /*
+     * kprintf() is called long before init_serport() — SERPER must be
+     * configured on the very first call.  We use 115200 baud; emulators
+     * with TCP/pipe serial ignore the baud rate anyway, and on real
+     * hardware the high rate keeps per-byte latency under 100 µs.
+     */
+    static BOOL serper_done;
+    if (!serper_done)
     {
-        /* Wait */
+        SERPER = SERPER_8BIT | SERPER_BAUD(115200);
+        serper_done = TRUE;
+    }
+#endif
+
+    {
+        /*
+         * Poll TBE with a bounded timeout.  An infinite loop could hang
+         * the system if the serial pipe/TCP sink stalls or the emulator
+         * never sets TBE.  At 115200 baud one byte takes ~87 µs; 20 000
+         * iterations at ~10 cycles each ≈ 28 ms at 7 MHz — enough for
+         * one byte even at 9600 baud, but will not block indefinitely.
+         */
+        volatile int timeout = 20000;
+        while (!(SERDATR & SERDAT_TBE) && --timeout)
+            ;
     }
 
-    /* Send the byte */
     SERDAT = 0x0100 | b;
 }
 
