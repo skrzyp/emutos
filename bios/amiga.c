@@ -2634,6 +2634,10 @@ void amiga_rs232_init(void)
     SERPER = SERPER_8BIT | SERPER_BAUD(IKBD_BAUD);
     VEC_LEVEL5 = amiga_int_5;
     INTENA = SETBITS | RBF; /* Enable RBF interrupt */
+#elif AMIGA_SERIAL_DEBUG_PRINT
+    /* Debug-only: initialize serial port for kprintf output.
+     * 9600 baud 8N1 — emulators ignore baud rate for TCP serial. */
+    SERPER = SERPER_8BIT | SERPER_BAUD(9600);
 #endif
 }
 

@@ -153,6 +153,15 @@ static void kprintf_outc_coldfire_rs232(int c)
 }
 #endif
 
+#if AMIGA_SERIAL_DEBUG_PRINT
+static void kprintf_outc_amiga_serial(int c)
+{
+    if (c == '\n')
+        amiga_rs232_writeb('\r');
+    amiga_rs232_writeb((UBYTE)c);
+}
+#endif
+
 static int vkprintf(const char *fmt, va_list ap)
 {
 #if CONSOLE_DEBUG_PRINT
@@ -222,6 +231,10 @@ static int vkprintf(const char *fmt, va_list ap)
 
 #if CARTRIDGE_DEBUG_PRINT
     return doprintf(kprintf_outc_cartridge, fmt, ap);
+#endif
+
+#if AMIGA_SERIAL_DEBUG_PRINT
+    return doprintf(kprintf_outc_amiga_serial, fmt, ap);
 #endif
 
 #if CONF_WITH_UAE

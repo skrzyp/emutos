@@ -2019,9 +2019,19 @@
 # define CARTRIDGE_DEBUG_PRINT 0
 #endif
 
+/*
+ * Set AMIGA_SERIAL_DEBUG_PRINT to 1 to route kprintf() to the Amiga
+ * hardware serial port (SERDAT register at 0xDFF030).  Output can be
+ * captured via TCP in FS-UAE/Amiberry with serial_port = tcp://...
+ * This works independently of boot_status and is available very early.
+ */
+#ifndef AMIGA_SERIAL_DEBUG_PRINT
+# define AMIGA_SERIAL_DEBUG_PRINT 0
+#endif
+
 
 /* Determine if kprintf() is available */
-#if CONF_WITH_UAE || DETECT_NATIVE_FEATURES || STONX_NATIVE_PRINT || CONSOLE_DEBUG_PRINT || RS232_DEBUG_PRINT || SCC_DEBUG_PRINT || COLDFIRE_DEBUG_PRINT || MIDI_DEBUG_PRINT || CARTRIDGE_DEBUG_PRINT
+#if CONF_WITH_UAE || DETECT_NATIVE_FEATURES || STONX_NATIVE_PRINT || CONSOLE_DEBUG_PRINT || RS232_DEBUG_PRINT || SCC_DEBUG_PRINT || COLDFIRE_DEBUG_PRINT || MIDI_DEBUG_PRINT || CARTRIDGE_DEBUG_PRINT || AMIGA_SERIAL_DEBUG_PRINT
 #  define HAS_KPRINTF 1
 # else
 #  define HAS_KPRINTF 0
