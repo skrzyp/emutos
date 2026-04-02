@@ -429,6 +429,60 @@ hwblit_raster(BLITVARS *blt)
 
 
 #ifdef MACHINE_AMIGA
+
+/*
+ * Descending modulo convention detection.
+ *
+ * The Atari blitter subtracts modulo in descending mode, requiring a
+ * positive value.  Some Amiga chipsets (confirmed: ECS Agnus) always add
+ * the modulo as a signed value regardless of direction, requiring a
+ * negative value for descending.  OCS and AGA may subtract (like Atari).
+ *
+ * We detect the hardware behaviour once using a small 2×2 descending
+ * blit with non-zero modulo.  The test uses amiga_raster_mask[] (chip
+ * RAM) as scratch space — safe because the mask buffer is always
+ * re-filled before each cookie-cut blit.
+ *
+ * Result: amiga_desc_negate = TRUE  → blitter subtracts (negate modulo)
+ *         amiga_desc_negate = FALSE → blitter adds signed (keep raw)
+ */
+static BOOL amiga_desc_detected;
+static BOOL amiga_desc_negate;
+
+static void amiga_detect_desc_modulo(void)
+{
+    UWORD *buf = amiga_raster_mask;
+
+    /* Source: 3 words per line, 2 lines.
+     * [AA BB 00 | CC DD 00] */
+    buf[0] = 0xAAAA;  buf[1] = 0xBBBB;  buf[2] = 0;
+    buf[3] = 0xCCCC;  buf[4] = 0xDDDD;  buf[5] = 0;
+
+    /* Destination: zeroed, same layout at buf[6..11] */
+    buf[6] = 0;  buf[7] = 0;  buf[8] = 0;
+    buf[9] = 0;  buf[10] = 0; buf[11] = 0;
+
+    /* Descending copy: D=A (0xF0, B-independent), x_cnt=2, y_cnt=2.
+     * Modulo = +2 — correct if blitter SUBTRACTS in descending mode.
+     * Start at bottom-right: src=buf[4], dst=buf[10]. */
+    amiga_blit_wait();
+    BLTCON0 = BLTCON0_USEA | BLTCON0_USED | 0xF0;
+    BLTCON1 = BLTCON1_DESC;
+    BLTAFWM = 0xFFFF;
+    BLTALWM = 0xFFFF;
+    BLTAMOD = 2;
+    BLTDMOD = 2;
+    BLTAPTH = (void *)&buf[4];
+    BLTDPTH = (void *)&buf[10];
+    BLTSIZE = (2 << 6) | 2;
+    amiga_blit_wait();
+
+    /* If subtract: line 0 was reached → buf[6] = 0xAAAA.
+     * If add signed: pointer went forward instead → buf[6] stays 0. */
+    amiga_desc_negate = (buf[6] == 0xAAAA);
+    amiga_desc_detected = TRUE;
+}
+
 /*
  * amiga_hwblit_raster()
  *
@@ -484,13 +538,15 @@ amiga_hwblit_raster(BLITVARS *blt)
      * reliable proxy for src_x_inc, which bit_blt() overwrites with
      * the skew value for single-word blits (an Atari-specific hack).
      *
-     * The Amiga blitter always ADDS modulo (ascending and descending
-     * alike).  In descending mode the Atari's negative y_inc/x_inc
-     * produce a negative raw value; negating it gives the positive
-     * modulo the Amiga blitter expects. */
+     * In descending mode, the modulo sign convention depends on the
+     * chipset: OCS/AGA subtract the modulo (like the Atari blitter),
+     * while ECS Agnus adds it as a signed value.  The raw formula
+     * (y_inc - x_inc) yields the correct signed value for add-signed
+     * chipsets; for subtract chipsets it must be negated.
+     * amiga_desc_negate is set by amiga_detect_desc_modulo(). */
     src_mod = blt->src_y_inc - blt->dst_x_inc;
     dst_mod = blt->dst_y_inc - blt->dst_x_inc;
-    if (descending) {
+    if (descending && amiga_desc_negate) {
         src_mod = -src_mod;
         dst_mod = -dst_mod;
     }
@@ -984,6 +1040,8 @@ static void bit_blt(struct blit_frame *blit_info)
      */
     {
         UBYTE ash_val = blt->skew & SKEW;
+        if (!amiga_desc_detected)
+            amiga_detect_desc_modulo();
         if (blt->dst_x_inc < 0 && ash_val)
         {
             /* Descending + shifted: software fallback.
