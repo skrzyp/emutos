@@ -579,6 +579,7 @@ amiga_hwblit_raster(BLITVARS *blt)
         BLTCON1 = descending ? BLTCON1_DESC : 0;
         BLTAFWM = blt->end_1;
         BLTALWM = blt->end_3;
+        BLTBDAT = 0xFFFF;      /* all minterms assume B=1 */
         BLTAMOD = src_mod;
         BLTDMOD = dst_mod;
         BLTAPTH = (void *)blt->src_addr;
